@@ -49,6 +49,7 @@ class MaterialIn(BaseModel):
     unit: str = Field(default="kg", max_length=20)
     reorder_point: float = Field(default=0, ge=0)
     supplier: str = Field(default="", max_length=100)
+    location: Literal["倉庫", "冷蔵庫", "冷凍庫"] = "倉庫"
 
 
 class TransactionIn(BaseModel):
@@ -112,9 +113,9 @@ def create_material(m: MaterialIn):
     with get_conn() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO materials (code, name, unit, reorder_point, supplier) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (m.code, m.name, m.unit, m.reorder_point, m.supplier),
+                "INSERT INTO materials (code, name, unit, reorder_point, supplier, location) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (m.code, m.name, m.unit, m.reorder_point, m.supplier, m.location),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, f"原料コード「{m.code}」はすでに登録されています")
@@ -129,8 +130,8 @@ def update_material(material_id: int, m: MaterialIn):
         try:
             conn.execute(
                 "UPDATE materials SET code = ?, name = ?, unit = ?, reorder_point = ?, "
-                "supplier = ? WHERE id = ?",
-                (m.code, m.name, m.unit, m.reorder_point, m.supplier, material_id),
+                "supplier = ?, location = ? WHERE id = ?",
+                (m.code, m.name, m.unit, m.reorder_point, m.supplier, m.location, material_id),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, f"原料コード「{m.code}」はすでに登録されています")

@@ -38,6 +38,9 @@
   td.num, th.num { text-align: right; }
   tr.low { background: #fff0f0; }
   tr.low:hover { background: #ffe6e6; }
+  tr.group td {
+    background: #e9eef3; font-weight: 700; color: #1f4e79; font-size: 13px;
+  }
   .pill {
     display: inline-block; padding: 2px 9px; border-radius: 10px;
     font-size: 12px; font-weight: 600;
@@ -240,6 +243,14 @@
             <label>原料名</label>
             <input type="text" id="mat-name" required placeholder="例: 小麦粉">
           </div>
+          <div>
+            <label>保管場所</label>
+            <select id="mat-location">
+              <option value="倉庫">倉庫</option>
+              <option value="冷蔵庫">冷蔵庫</option>
+              <option value="冷凍庫">冷凍庫</option>
+            </select>
+          </div>
         </div>
         <div class="row">
           <div>
@@ -265,7 +276,7 @@
       <h2>登録済みの原料</h2>
       <table>
         <thead><tr>
-          <th>コード</th><th>原料名</th><th>単位</th>
+          <th>コード</th><th>原料名</th><th>保管場所</th><th>単位</th>
           <th class="num">発注点</th><th>仕入先</th><th>操作</th>
         </tr></thead>
         <tbody id="mat-body"></tbody>
@@ -306,6 +317,7 @@
 
 <script>
 let materials = [];
+const LOCATIONS = ['倉庫', '冷蔵庫', '冷凍庫'];
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -383,19 +395,27 @@ function renderStock() {
     alert.innerHTML = '<div class="alert ok">✓ 発注点を下回っている原料はありません。</div>';
   }
 
-  for (const m of materials) {
-    const tr = document.createElement('tr');
-    if (m.low) tr.className = 'low';
-    tr.innerHTML =
-      '<td>' + esc(m.code) + '</td>' +
-      '<td>' + esc(m.name) + '</td>' +
-      '<td class="num"><b>' + fmt(m.stock) + '</b> ' + esc(m.unit) + '</td>' +
-      '<td class="num">' + fmt(m.reorder_point) + ' ' + esc(m.unit) + '</td>' +
-      '<td>' + esc(m.supplier) + '</td>' +
-      '<td>' + (m.low
-        ? '<span class="pill low">発注点割れ</span>'
-        : '<span class="pill ok">適正</span>') + '</td>';
-    body.appendChild(tr);
+  for (const loc of LOCATIONS) {
+    const group = materials.filter(m => (m.location || '倉庫') === loc);
+    if (!group.length) continue;
+    const gh = document.createElement('tr');
+    gh.className = 'group';
+    gh.innerHTML = '<td colspan="6">' + esc(loc) + '（' + group.length + ' 品目）</td>';
+    body.appendChild(gh);
+    for (const m of group) {
+      const tr = document.createElement('tr');
+      if (m.low) tr.className = 'low';
+      tr.innerHTML =
+        '<td>' + esc(m.code) + '</td>' +
+        '<td>' + esc(m.name) + '</td>' +
+        '<td class="num"><b>' + fmt(m.stock) + '</b> ' + esc(m.unit) + '</td>' +
+        '<td class="num">' + fmt(m.reorder_point) + ' ' + esc(m.unit) + '</td>' +
+        '<td>' + esc(m.supplier) + '</td>' +
+        '<td>' + (m.low
+          ? '<span class="pill low">発注点割れ</span>'
+          : '<span class="pill ok">適正</span>') + '</td>';
+      body.appendChild(tr);
+    }
   }
 }
 
@@ -408,6 +428,7 @@ function renderMaterialTable() {
     tr.innerHTML =
       '<td>' + esc(m.code) + '</td>' +
       '<td>' + esc(m.name) + '</td>' +
+      '<td>' + esc(m.location || '倉庫') + '</td>' +
       '<td>' + esc(m.unit) + '</td>' +
       '<td class="num">' + fmt(m.reorder_point) + '</td>' +
       '<td>' + esc(m.supplier) + '</td>' +
@@ -417,9 +438,22 @@ function renderMaterialTable() {
   }
 }
 
+function materialOptionGroups() {
+  let html = '';
+  for (const loc of LOCATIONS) {
+    const group = materials.filter(m => (m.location || '倉庫') === loc);
+    if (!group.length) continue;
+    html += '<optgroup label="' + esc(loc) + '">';
+    for (const m of group) {
+      html += '<option value="' + m.id + '">' + esc(m.code + ' / ' + m.name) + '</option>';
+    }
+    html += '</optgroup>';
+  }
+  return html;
+}
+
 function fillMaterialSelects() {
-  const opts = materials.map(m =>
-    '<option value="' + m.id + '">' + esc(m.code + ' / ' + m.name) + '</option>').join('');
+  const opts = materialOptionGroups();
   document.getElementById('tx-material').innerHTML =
     materials.length ? opts : '<option value="">原料を先に登録してください</option>';
   document.getElementById('edit-material').innerHTML = opts;
@@ -436,6 +470,7 @@ document.getElementById('mat-form').onsubmit = async (e) => {
   const payload = {
     code: document.getElementById('mat-code').value.trim(),
     name: document.getElementById('mat-name').value.trim(),
+    location: document.getElementById('mat-location').value,
     unit: document.getElementById('mat-unit').value.trim() || 'kg',
     reorder_point: parseFloat(document.getElementById('mat-reorder').value) || 0,
     supplier: document.getElementById('mat-supplier').value.trim(),
@@ -461,6 +496,7 @@ function editMaterial(id) {
   document.getElementById('mat-id').value = m.id;
   document.getElementById('mat-code').value = m.code;
   document.getElementById('mat-name').value = m.name;
+  document.getElementById('mat-location').value = m.location || '倉庫';
   document.getElementById('mat-unit').value = m.unit;
   document.getElementById('mat-reorder').value = m.reorder_point;
   document.getElementById('mat-supplier').value = m.supplier;
@@ -473,6 +509,7 @@ function editMaterial(id) {
 function resetMaterialForm() {
   document.getElementById('mat-form').reset();
   document.getElementById('mat-id').value = '';
+  document.getElementById('mat-location').value = '倉庫';
   document.getElementById('mat-unit').value = 'kg';
   document.getElementById('mat-reorder').value = '0';
   document.getElementById('mat-form-title').textContent = '原料の新規登録';
@@ -620,8 +657,7 @@ document.getElementById('edit-modal').onclick = (e) => {
 
 // --- 一括出庫 ---
 function batchRowHtml() {
-  const opts = materials.map(m =>
-    '<option value="' + m.id + '">' + esc(m.code + ' / ' + m.name) + '</option>').join('');
+  const opts = materialOptionGroups();
   return '<td><select class="b-mat"><option value="">― 原料を選択 ―</option>' + opts + '</select></td>' +
     '<td><input type="number" class="b-qty" step="any" min="0" placeholder="0"></td>' +
     '<td class="b-stock num">—</td>' +

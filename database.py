@@ -46,6 +46,7 @@ def init_db() -> None:
                 unit          TEXT NOT NULL DEFAULT 'kg',
                 reorder_point REAL NOT NULL DEFAULT 0,
                 supplier      TEXT NOT NULL DEFAULT '',
+                location      TEXT NOT NULL DEFAULT '倉庫',
                 created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
 
@@ -63,3 +64,9 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_tx_created  ON transactions(created_at);
             """
         )
+        # 旧バージョンの DB（location 列が無い）への移行
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(materials)")]
+        if "location" not in cols:
+            conn.execute(
+                "ALTER TABLE materials ADD COLUMN location TEXT NOT NULL DEFAULT '倉庫'"
+            )
