@@ -38,9 +38,22 @@ make-soukozaiko/
 
 ## 使い方
 
+### 事前準備：Python のインストール（手元の PC）
+
+`run_dev.bat`（動作確認）と `build.bat`（exe 作成）は Python を使います。
+まだ入っていない場合は、先にインストールしてください。
+
+1. https://www.python.org/downloads/ から Python 3.11 以上をダウンロード
+2. インストーラを実行し、**最初の画面で「Add python.exe to PATH」に必ずチェックを入れる**
+3. インストール後、コマンドプロンプトで `python --version` と打ち、
+   バージョンが表示されれば成功
+
+> ※ 社内サーバーには Python のインストールは不要です（exe で動くため）。
+> 必要なのは手元の開発用 PC だけです。
+
 ### A. 開発・動作確認（手元の PC）
 
-Python 3.11 以上が入った PC で動作を確認できます。
+上記の Python が入った PC で動作を確認できます。
 
 Windows の場合は `run_dev.bat` をダブルクリック。
 コマンドで実行する場合は次のとおりです。
