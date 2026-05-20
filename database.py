@@ -48,6 +48,7 @@ def init_db() -> None:
                 reorder_point REAL NOT NULL DEFAULT 0,
                 supplier      TEXT NOT NULL DEFAULT '',
                 location      TEXT NOT NULL DEFAULT '倉庫',
+                active        INTEGER NOT NULL DEFAULT 1,
                 created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
 
@@ -74,4 +75,8 @@ def init_db() -> None:
         if "product_name" not in cols:
             conn.execute(
                 "ALTER TABLE materials ADD COLUMN product_name TEXT NOT NULL DEFAULT ''"
+            )
+        if "active" not in cols:
+            conn.execute(
+                "ALTER TABLE materials ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
             )

@@ -109,7 +109,21 @@
   .hint { font-size: 12px; color: #888; margin-top: 4px; }
   .b-qty { text-align: right; }
   #batch-body td { vertical-align: middle; }
-  #batch-result:not(:empty), #import-result:not(:empty) { margin-top: 14px; }
+  #batch-result:not(:empty), #import-result:not(:empty),
+  #register-result:not(:empty) { margin-top: 14px; }
+  .catalog-box {
+    border: 1px solid #ced4da; border-radius: 6px;
+    max-height: 280px; overflow-y: auto; margin-top: 6px;
+  }
+  .catalog-row {
+    display: flex; align-items: center; gap: 8px; margin: 0;
+    padding: 6px 10px; border-bottom: 1px solid #f1f3f5;
+    font-size: 14px; cursor: pointer;
+  }
+  .catalog-row:last-child { border-bottom: none; }
+  .catalog-row:hover { background: #f8fbff; }
+  .catalog-row input { width: auto; margin: 0; }
+  .catalog-empty { padding: 18px; text-align: center; color: #888; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -277,10 +291,12 @@
       </form>
     </div>
     <div class="card">
-      <h2>Excel から一括取り込み</h2>
-      <p class="hint">原料一覧の Excel ファイル（.xlsx）を選ぶと、原料マスターへ一括登録します。
-        見出し行（「ｺｰﾄﾞ」の列）を自動で探し、コード／一般名称／原材料名／単位／仕入先を取り込みます。
-        すでに同じコードがある原料は変更しません（スキップ）。</p>
+      <h2>Excel から一括取り込み（カタログ作成）</h2>
+      <p class="hint">原料一覧の Excel ファイル（.xlsx）を選ぶと、全商品を「カタログ」に取り込みます。
+        見出し行（「ｺｰﾄﾞ」の列）を自動で探し、コード／一般名称／原材料名／単位／仕入先を読み取ります。
+        すでに同じコードがある原料は、一般名称・原材料名・単位・仕入先を最新に更新します
+        （保管場所・発注点・登録状態は維持）。
+        実際に在庫する原料は、下の「一覧から原料を登録」で選んでください。</p>
       <div class="row">
         <div>
           <label>原料一覧の Excel ファイル</label>
@@ -289,6 +305,30 @@
       </div>
       <button type="button" class="btn" onclick="importMaterials()">取り込む</button>
       <div id="import-result"></div>
+    </div>
+    <div class="card">
+      <h2>一覧から原料を登録</h2>
+      <p class="hint">取り込んだカタログから、実際に在庫する原料を選んで登録します。
+        登録した原料だけが在庫一覧・入出庫・一括出庫に表示されます。</p>
+      <div class="row">
+        <div>
+          <label>保管場所</label>
+          <select id="reg-location">
+            <option value="倉庫">倉庫</option>
+            <option value="冷蔵庫">冷蔵庫</option>
+            <option value="冷凍庫">冷凍庫</option>
+          </select>
+        </div>
+        <div>
+          <label>カタログを検索</label>
+          <input type="text" id="reg-search" placeholder="コード・名称で絞り込み"
+            oninput="renderCatalog()">
+        </div>
+      </div>
+      <div id="catalog-count" class="hint"></div>
+      <div id="catalog-list" class="catalog-box"></div>
+      <button type="button" class="btn" onclick="registerSelected()">選択した原料を登録</button>
+      <div id="register-result"></div>
     </div>
     <div class="card">
       <h2>登録済みの原料</h2>
@@ -335,6 +375,7 @@
 
 <script>
 let materials = [];
+let catalog = [];
 const LOCATIONS = ['倉庫', '冷蔵庫', '冷凍庫'];
 
 function esc(s) {
@@ -380,6 +421,7 @@ document.querySelectorAll('nav button').forEach(btn => {
     document.getElementById(btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'history') loadTransactions();
     if (btn.dataset.tab === 'batch') enterBatchTab();
+    if (btn.dataset.tab === 'master') loadCatalog();
   };
 });
 
@@ -453,7 +495,7 @@ function renderMaterialTable() {
       '<td class="num">' + fmt(m.reorder_point) + '</td>' +
       '<td>' + esc(m.supplier) + '</td>' +
       '<td><button class="mini" onclick="editMaterial(' + m.id + ')">編集</button>' +
-      '<button class="mini danger" onclick="deleteMaterial(' + m.id + ')">削除</button></td>';
+      '<button class="mini danger" onclick="unregisterMaterial(' + m.id + ')">登録解除</button></td>';
     body.appendChild(tr);
   }
 }
@@ -544,18 +586,87 @@ function resetMaterialForm() {
   document.getElementById('mat-cancel').style.display = 'none';
 }
 
-async function deleteMaterial(id) {
+async function unregisterMaterial(id) {
   const m = materials.find(x => x.id === id);
   if (!m) return;
-  if (!confirm('原料「' + m.name + '」を削除します。\nこの原料の入出庫履歴もすべて削除されます。よろしいですか？'))
+  const label = (m.name || '') + (m.product_name ? ' ' + m.product_name : '');
+  if (!confirm('「' + label + '」を登録解除します。\n'
+    + '在庫一覧から外れ、カタログに戻ります（入出庫の履歴は残ります）。よろしいですか？'))
     return;
   try {
-    await api('DELETE', '/api/materials/' + id);
-    toast('原料を削除しました');
+    await api('POST', '/api/materials/' + id + '/unregister');
+    toast('登録解除しました');
+    await loadCatalog();
     await loadMaterials();
   } catch (err) {
     toast(err.message, true);
   }
+}
+
+// --- カタログ（取り込み済みだが未登録の原料） ---
+async function loadCatalog() {
+  try {
+    catalog = await api('GET', '/api/catalog');
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  renderCatalog();
+}
+
+function renderCatalog() {
+  const box = document.getElementById('catalog-list');
+  const countEl = document.getElementById('catalog-count');
+  const q = document.getElementById('reg-search').value.trim().toLowerCase();
+  if (!catalog.length) {
+    countEl.textContent = '';
+    box.innerHTML = '<div class="catalog-empty">'
+      + 'カタログが空です。先に Excel を取り込んでください。</div>';
+    return;
+  }
+  const matched = catalog.filter(m =>
+    !q || (m.code + ' ' + m.name + ' ' + (m.product_name || '')).toLowerCase().includes(q));
+  countEl.textContent = 'カタログ ' + catalog.length + ' 件中 ' + matched.length + ' 件';
+  if (!matched.length) {
+    box.innerHTML = '<div class="catalog-empty">該当する原料がありません。</div>';
+    return;
+  }
+  const CAP = 300;
+  let html = '';
+  for (const m of matched.slice(0, CAP)) {
+    html += '<label class="catalog-row"><input type="checkbox" value="' + m.id + '">'
+      + '<span>' + esc(m.code + '　' + m.name
+        + (m.product_name ? ' ' + m.product_name : '')
+        + (m.unit ? '（' + m.unit + '）' : '')) + '</span></label>';
+  }
+  if (matched.length > CAP) {
+    html += '<div class="catalog-empty">ほか ' + (matched.length - CAP)
+      + ' 件… 検索で絞り込んでください</div>';
+  }
+  box.innerHTML = html;
+}
+
+async function registerSelected() {
+  const ids = [...document.querySelectorAll('#catalog-list input:checked')]
+    .map(c => parseInt(c.value, 10));
+  const resultEl = document.getElementById('register-result');
+  if (!ids.length) {
+    toast('登録する原料にチェックを入れてください', true);
+    return;
+  }
+  const location = document.getElementById('reg-location').value;
+  let res;
+  try {
+    res = await api('POST', '/api/materials/register', { location: location, ids: ids });
+  } catch (err) {
+    resultEl.innerHTML = '<div class="alert">' + esc(err.message) + '</div>';
+    return;
+  }
+  resultEl.innerHTML = '<div class="alert ok">' + res.registered
+    + ' 件を「' + esc(location) + '」に登録しました。</div>';
+  document.getElementById('reg-search').value = '';
+  await loadCatalog();
+  await loadMaterials();
 }
 
 async function importMaterials() {
@@ -585,10 +696,11 @@ async function importMaterials() {
     return;
   }
   resultEl.innerHTML = '<div class="alert ok">取り込み完了：'
-    + res.imported + ' 件を新規登録しました'
-    + (res.skipped ? '（' + res.skipped + ' 件は登録済みのためスキップ）' : '')
-    + '。</div>';
+    + res.imported + ' 件をカタログに追加'
+    + (res.updated ? '、' + res.updated + ' 件を更新' : '')
+    + '。下の「一覧から原料を登録」で在庫する原料を選んでください。</div>';
   fileEl.value = '';
+  await loadCatalog();
   await loadMaterials();
 }
 
