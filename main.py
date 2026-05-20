@@ -5,14 +5,17 @@
 社内の各 PC からブラウザで http://サーバー名:8000/ にアクセスできる。
 """
 
+import io
 import os
+import re
 import socket
 import sqlite3
 import sys
 from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+import openpyxl
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,6 +49,7 @@ class MaterialIn(BaseModel):
 
     code: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=100)
+    product_name: str = Field(default="", max_length=100)
     unit: str = Field(default="kg", max_length=20)
     reorder_point: float = Field(default=0, ge=0)
     supplier: str = Field(default="", max_length=100)
@@ -86,6 +90,21 @@ def _stock(conn: sqlite3.Connection, material_id: int) -> float:
     return row["s"]
 
 
+def _cell_str(v) -> str:
+    """Excel セルの値を文字列に整える（10000.0 → "10000" など）。"""
+    if v is None:
+        return ""
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+def _unit_from_pack(pack: str) -> str:
+    """入数（例「25kg」）の末尾から単位を取り出す。取れなければ kg。"""
+    m = re.search(r"([^\d.\s]+)$", pack)
+    return m.group(1) if m else "kg"
+
+
 # --- 原料マスター API ---------------------------------------------------------
 
 @app.get("/api/materials")
@@ -113,9 +132,11 @@ def create_material(m: MaterialIn):
     with get_conn() as conn:
         try:
             cur = conn.execute(
-                "INSERT INTO materials (code, name, unit, reorder_point, supplier, location) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (m.code, m.name, m.unit, m.reorder_point, m.supplier, m.location),
+                "INSERT INTO materials "
+                "(code, name, product_name, unit, reorder_point, supplier, location) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (m.code, m.name, m.product_name, m.unit, m.reorder_point,
+                 m.supplier, m.location),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, f"原料コード「{m.code}」はすでに登録されています")
@@ -129,9 +150,10 @@ def update_material(material_id: int, m: MaterialIn):
             raise HTTPException(404, "原料が見つかりません")
         try:
             conn.execute(
-                "UPDATE materials SET code = ?, name = ?, unit = ?, reorder_point = ?, "
-                "supplier = ?, location = ? WHERE id = ?",
-                (m.code, m.name, m.unit, m.reorder_point, m.supplier, m.location, material_id),
+                "UPDATE materials SET code = ?, name = ?, product_name = ?, unit = ?, "
+                "reorder_point = ?, supplier = ?, location = ? WHERE id = ?",
+                (m.code, m.name, m.product_name, m.unit, m.reorder_point,
+                 m.supplier, m.location, material_id),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, f"原料コード「{m.code}」はすでに登録されています")
@@ -153,7 +175,8 @@ def delete_material(material_id: int):
 def list_transactions(material_id: Optional[int] = None, limit: int = 200):
     limit = max(1, min(limit, 1000))
     sql = (
-        "SELECT t.*, m.code AS material_code, m.name AS material_name, m.unit AS unit "
+        "SELECT t.*, m.code AS material_code, m.name AS material_name, "
+        "m.product_name AS material_product, m.unit AS unit "
         "FROM transactions t JOIN materials m ON m.id = t.material_id "
     )
     params: list = []
@@ -250,6 +273,84 @@ def create_batch_out(batch: BatchOutIn):
             )
             registered += 1
         return {"registered": registered, "skipped": skipped}
+
+
+# --- Excel 取り込み API -------------------------------------------------------
+
+@app.post("/api/import/materials")
+async def import_materials(file: UploadFile = File(...)):
+    """原料一覧の Excel(.xlsx) を読み込み、原料マスターへ一括登録する。
+
+    見出し行（「ｺｰﾄﾞ」を含む行）を自動で探し、必要な列だけ取り込む。
+    すでに同じコードが登録済みの原料はスキップする（既存データは変更しない）。
+    """
+    content = await file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception:
+        raise HTTPException(
+            400, "Excel ファイルとして読み込めませんでした。.xlsx 形式か確認してください"
+        )
+    try:
+        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+
+    header = []
+    header_idx = None
+    for i, row in enumerate(rows[:15]):
+        cells = [_cell_str(c) for c in row]
+        if "ｺｰﾄﾞ" in cells or "コード" in cells:
+            header, header_idx = cells, i
+            break
+    if header_idx is None:
+        raise HTTPException(400, "見出し行（「ｺｰﾄﾞ」の列）が見つかりませんでした")
+
+    def find(*names):
+        for n in names:
+            if n in header:
+                return header.index(n)
+        return None
+
+    c_code = find("ｺｰﾄﾞ", "コード")
+    c_name = find("一般名称")
+    c_product = find("原材料名")
+    c_pack = find("入数")
+    c_supplier = find("購入元1", "購入元")
+    if c_code is None:
+        raise HTTPException(400, "「ｺｰﾄﾞ」の列が見つかりませんでした")
+
+    def cell(row, idx):
+        if idx is None or idx >= len(row):
+            return ""
+        return _cell_str(row[idx])
+
+    imported = 0
+    skipped = 0
+    with get_conn() as conn:
+        existing = {r["code"] for r in conn.execute("SELECT code FROM materials")}
+        for row in rows[header_idx + 1:]:
+            code = cell(row, c_code)
+            if not code:
+                continue
+            if code in existing:
+                skipped += 1
+                continue
+            conn.execute(
+                "INSERT INTO materials "
+                "(code, name, product_name, unit, reorder_point, supplier, location) "
+                "VALUES (?, ?, ?, ?, 0, ?, '倉庫')",
+                (
+                    code,
+                    cell(row, c_name),
+                    cell(row, c_product),
+                    _unit_from_pack(cell(row, c_pack)),
+                    cell(row, c_supplier),
+                ),
+            )
+            existing.add(code)
+            imported += 1
+    return {"imported": imported, "skipped": skipped}
 
 
 # --- 画面 ---------------------------------------------------------------------

@@ -43,6 +43,7 @@ def init_db() -> None:
                 id            INTEGER PRIMARY KEY AUTOINCREMENT,
                 code          TEXT NOT NULL UNIQUE,
                 name          TEXT NOT NULL,
+                product_name  TEXT NOT NULL DEFAULT '',
                 unit          TEXT NOT NULL DEFAULT 'kg',
                 reorder_point REAL NOT NULL DEFAULT 0,
                 supplier      TEXT NOT NULL DEFAULT '',
@@ -64,9 +65,13 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_tx_created  ON transactions(created_at);
             """
         )
-        # 旧バージョンの DB（location 列が無い）への移行
+        # 旧バージョンの DB に無い列を追加（移行）
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(materials)")]
         if "location" not in cols:
             conn.execute(
                 "ALTER TABLE materials ADD COLUMN location TEXT NOT NULL DEFAULT '倉庫'"
+            )
+        if "product_name" not in cols:
+            conn.execute(
+                "ALTER TABLE materials ADD COLUMN product_name TEXT NOT NULL DEFAULT ''"
             )

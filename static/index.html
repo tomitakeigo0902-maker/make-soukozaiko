@@ -109,7 +109,7 @@
   .hint { font-size: 12px; color: #888; margin-top: 4px; }
   .b-qty { text-align: right; }
   #batch-body td { vertical-align: middle; }
-  #batch-result:not(:empty) { margin-top: 14px; }
+  #batch-result:not(:empty), #import-result:not(:empty) { margin-top: 14px; }
 </style>
 </head>
 <body>
@@ -133,7 +133,7 @@
       </div>
       <table>
         <thead><tr>
-          <th>コード</th><th>原料名</th><th class="num">現在庫</th>
+          <th>コード</th><th>一般名称</th><th>原材料名</th><th class="num">現在庫</th>
           <th class="num">発注点</th><th>仕入先</th><th>状態</th>
         </tr></thead>
         <tbody id="stock-body"></tbody>
@@ -237,12 +237,18 @@
         <div class="row">
           <div>
             <label>原料コード</label>
-            <input type="text" id="mat-code" required placeholder="例: M-001">
+            <input type="text" id="mat-code" required placeholder="例: 10000">
           </div>
           <div>
-            <label>原料名</label>
+            <label>一般名称</label>
             <input type="text" id="mat-name" required placeholder="例: 小麦粉">
           </div>
+          <div>
+            <label>原材料名</label>
+            <input type="text" id="mat-product" placeholder="例: ｴﾝｼﾞｪﾗｲﾄ">
+          </div>
+        </div>
+        <div class="row">
           <div>
             <label>保管場所</label>
             <select id="mat-location">
@@ -251,8 +257,6 @@
               <option value="冷凍庫">冷凍庫</option>
             </select>
           </div>
-        </div>
-        <div class="row">
           <div>
             <label>単位</label>
             <input type="text" id="mat-unit" value="kg" placeholder="kg / 個 など">
@@ -273,10 +277,24 @@
       </form>
     </div>
     <div class="card">
+      <h2>Excel から一括取り込み</h2>
+      <p class="hint">原料一覧の Excel ファイル（.xlsx）を選ぶと、原料マスターへ一括登録します。
+        見出し行（「ｺｰﾄﾞ」の列）を自動で探し、コード／一般名称／原材料名／単位／仕入先を取り込みます。
+        すでに同じコードがある原料は変更しません（スキップ）。</p>
+      <div class="row">
+        <div>
+          <label>原料一覧の Excel ファイル</label>
+          <input type="file" id="import-file" accept=".xlsx">
+        </div>
+      </div>
+      <button type="button" class="btn" onclick="importMaterials()">取り込む</button>
+      <div id="import-result"></div>
+    </div>
+    <div class="card">
       <h2>登録済みの原料</h2>
       <table>
         <thead><tr>
-          <th>コード</th><th>原料名</th><th>保管場所</th><th>単位</th>
+          <th>コード</th><th>一般名称</th><th>原材料名</th><th>保管場所</th><th>単位</th>
           <th class="num">発注点</th><th>仕入先</th><th>操作</th>
         </tr></thead>
         <tbody id="mat-body"></tbody>
@@ -400,7 +418,7 @@ function renderStock() {
     if (!group.length) continue;
     const gh = document.createElement('tr');
     gh.className = 'group';
-    gh.innerHTML = '<td colspan="6">' + esc(loc) + '（' + group.length + ' 品目）</td>';
+    gh.innerHTML = '<td colspan="7">' + esc(loc) + '（' + group.length + ' 品目）</td>';
     body.appendChild(gh);
     for (const m of group) {
       const tr = document.createElement('tr');
@@ -408,6 +426,7 @@ function renderStock() {
       tr.innerHTML =
         '<td>' + esc(m.code) + '</td>' +
         '<td>' + esc(m.name) + '</td>' +
+        '<td>' + esc(m.product_name || '') + '</td>' +
         '<td class="num"><b>' + fmt(m.stock) + '</b> ' + esc(m.unit) + '</td>' +
         '<td class="num">' + fmt(m.reorder_point) + ' ' + esc(m.unit) + '</td>' +
         '<td>' + esc(m.supplier) + '</td>' +
@@ -428,6 +447,7 @@ function renderMaterialTable() {
     tr.innerHTML =
       '<td>' + esc(m.code) + '</td>' +
       '<td>' + esc(m.name) + '</td>' +
+      '<td>' + esc(m.product_name || '') + '</td>' +
       '<td>' + esc(m.location || '倉庫') + '</td>' +
       '<td>' + esc(m.unit) + '</td>' +
       '<td class="num">' + fmt(m.reorder_point) + '</td>' +
@@ -438,6 +458,11 @@ function renderMaterialTable() {
   }
 }
 
+function matLabel(m) {
+  const n = (m.name || '') + (m.product_name ? ' ' + m.product_name : '');
+  return m.code + ' / ' + (n.trim() || '(名称未設定)');
+}
+
 function materialOptionGroups() {
   let html = '';
   for (const loc of LOCATIONS) {
@@ -445,7 +470,7 @@ function materialOptionGroups() {
     if (!group.length) continue;
     html += '<optgroup label="' + esc(loc) + '">';
     for (const m of group) {
-      html += '<option value="' + m.id + '">' + esc(m.code + ' / ' + m.name) + '</option>';
+      html += '<option value="' + m.id + '">' + esc(matLabel(m)) + '</option>';
     }
     html += '</optgroup>';
   }
@@ -470,6 +495,7 @@ document.getElementById('mat-form').onsubmit = async (e) => {
   const payload = {
     code: document.getElementById('mat-code').value.trim(),
     name: document.getElementById('mat-name').value.trim(),
+    product_name: document.getElementById('mat-product').value.trim(),
     location: document.getElementById('mat-location').value,
     unit: document.getElementById('mat-unit').value.trim() || 'kg',
     reorder_point: parseFloat(document.getElementById('mat-reorder').value) || 0,
@@ -496,6 +522,7 @@ function editMaterial(id) {
   document.getElementById('mat-id').value = m.id;
   document.getElementById('mat-code').value = m.code;
   document.getElementById('mat-name').value = m.name;
+  document.getElementById('mat-product').value = m.product_name || '';
   document.getElementById('mat-location').value = m.location || '倉庫';
   document.getElementById('mat-unit').value = m.unit;
   document.getElementById('mat-reorder').value = m.reorder_point;
@@ -529,6 +556,40 @@ async function deleteMaterial(id) {
   } catch (err) {
     toast(err.message, true);
   }
+}
+
+async function importMaterials() {
+  const fileEl = document.getElementById('import-file');
+  const resultEl = document.getElementById('import-result');
+  if (!fileEl.files.length) {
+    toast('Excel ファイルを選んでください', true);
+    return;
+  }
+  const fd = new FormData();
+  fd.append('file', fileEl.files[0]);
+  resultEl.innerHTML = '<div class="alert ok">取り込み中です… しばらくお待ちください。</div>';
+  let res;
+  try {
+    const r = await fetch('/api/import/materials', { method: 'POST', body: fd });
+    if (!r.ok) {
+      let msg = '取り込みに失敗しました';
+      try {
+        const j = await r.json();
+        if (typeof j.detail === 'string') msg = j.detail;
+      } catch (e) {}
+      throw new Error(msg);
+    }
+    res = await r.json();
+  } catch (err) {
+    resultEl.innerHTML = '<div class="alert">取り込みに失敗しました：' + esc(err.message) + '</div>';
+    return;
+  }
+  resultEl.innerHTML = '<div class="alert ok">取り込み完了：'
+    + res.imported + ' 件を新規登録しました'
+    + (res.skipped ? '（' + res.skipped + ' 件は登録済みのためスキップ）' : '')
+    + '。</div>';
+  fileEl.value = '';
+  await loadMaterials();
 }
 
 // --- 入出庫登録 ---
@@ -585,7 +646,8 @@ async function loadTransactions() {
     tr.innerHTML =
       '<td>' + esc(t.created_at) + '</td>' +
       '<td>' + badge + '</td>' +
-      '<td>' + esc(t.material_code + ' / ' + t.material_name) + '</td>' +
+      '<td>' + esc(t.material_code + ' / ' + t.material_name
+        + (t.material_product ? ' ' + t.material_product : '')) + '</td>' +
       '<td class="num">' + fmt(t.quantity) + ' ' + esc(t.unit) + '</td>' +
       '<td>' + esc(t.line) + '</td>' +
       '<td>' + esc(t.note) + '</td>' +
