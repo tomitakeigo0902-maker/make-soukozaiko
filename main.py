@@ -61,6 +61,19 @@ class TransactionIn(BaseModel):
     note: str = Field(default="", max_length=300)
 
 
+class BatchOutItem(BaseModel):
+    material_id: int
+    quantity: float = Field(gt=0)
+
+
+class BatchOutIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    line: str = Field(default="", max_length=100)
+    note: str = Field(default="", max_length=300)
+    items: list[BatchOutItem] = Field(default_factory=list)
+
+
 # --- 在庫計算ヘルパー ---------------------------------------------------------
 
 def _stock(conn: sqlite3.Connection, material_id: int) -> float:
@@ -197,6 +210,45 @@ def delete_transaction(tx_id: int):
         if _stock(conn, old["material_id"]) < 0:
             raise HTTPException(400, "この記録を削除すると在庫がマイナスになります")
     return {"ok": True}
+
+
+@app.post("/api/transactions/batch-out")
+def create_batch_out(batch: BatchOutIn):
+    """出庫依頼表のように複数原料をまとめて出庫登録する。
+
+    在庫が足りる明細だけ登録し、不足している明細は登録せず skipped で返す。
+    同じ原料が複数行にある場合は登録済み分を反映した在庫で順に判定する。
+    """
+    if not batch.items:
+        raise HTTPException(400, "出庫する明細がありません")
+    with get_conn() as conn:
+        registered = 0
+        skipped = []
+        for item in batch.items:
+            m = conn.execute(
+                "SELECT name, unit FROM materials WHERE id = ?", (item.material_id,)
+            ).fetchone()
+            if m is None:
+                raise HTTPException(404, "原料が見つかりません")
+            available = _stock(conn, item.material_id)
+            if available < item.quantity:
+                skipped.append(
+                    {
+                        "material_id": item.material_id,
+                        "name": m["name"],
+                        "unit": m["unit"],
+                        "requested": item.quantity,
+                        "available": available,
+                    }
+                )
+                continue
+            conn.execute(
+                "INSERT INTO transactions (material_id, type, quantity, line, note) "
+                "VALUES (?, 'out', ?, ?, ?)",
+                (item.material_id, item.quantity, batch.line, batch.note),
+            )
+            registered += 1
+        return {"registered": registered, "skipped": skipped}
 
 
 # --- 画面 ---------------------------------------------------------------------

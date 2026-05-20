@@ -104,6 +104,9 @@
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
   .modal-actions button { margin-top: 18px; }
   .hint { font-size: 12px; color: #888; margin-top: 4px; }
+  .b-qty { text-align: right; }
+  #batch-body td { vertical-align: middle; }
+  #batch-result:not(:empty) { margin-top: 14px; }
 </style>
 </head>
 <body>
@@ -111,6 +114,7 @@
 <nav>
   <button data-tab="stock" class="active">在庫一覧</button>
   <button data-tab="register">入出庫登録</button>
+  <button data-tab="batch">一括出庫</button>
   <button data-tab="history">履歴</button>
   <button data-tab="master">原料マスター</button>
 </nav>
@@ -163,6 +167,41 @@
         <textarea id="tx-note" placeholder="任意"></textarea>
         <button type="submit" class="btn">登録する</button>
       </form>
+    </div>
+  </section>
+
+  <!-- 一括出庫 -->
+  <section id="batch">
+    <div class="card">
+      <h2>一括出庫（出庫依頼表の入力）</h2>
+      <p class="hint">紙の出庫依頼表を見ながら、複数の原料をまとめて出庫登録できます。</p>
+      <div class="row">
+        <div>
+          <label>出庫先ライン</label>
+          <input type="text" id="batch-line" placeholder="例: 第1ライン">
+        </div>
+        <div>
+          <label>備考</label>
+          <input type="text" id="batch-note" placeholder="任意（依頼表番号など）">
+        </div>
+      </div>
+      <label style="margin-top:16px">明細</label>
+      <table>
+        <thead><tr>
+          <th style="width:42%">原料</th>
+          <th class="num" style="width:16%">数量</th>
+          <th class="num" style="width:18%">現在庫</th>
+          <th style="width:16%">状態</th>
+          <th style="width:8%"></th>
+        </tr></thead>
+        <tbody id="batch-body"></tbody>
+      </table>
+      <button type="button" class="mini" onclick="addBatchRow()" style="margin-top:10px">＋ 行を追加</button>
+      <div id="batch-result"></div>
+      <div>
+        <button type="button" class="btn" onclick="submitBatch()">まとめて出庫登録</button>
+        <button type="button" class="btn gray" onclick="resetBatch()">明細をクリア</button>
+      </div>
     </div>
   </section>
 
@@ -310,6 +349,7 @@ document.querySelectorAll('nav button').forEach(btn => {
     btn.classList.add('active');
     document.getElementById(btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'history') loadTransactions();
+    if (btn.dataset.tab === 'batch') enterBatchTab();
   };
 });
 
@@ -577,6 +617,123 @@ async function deleteTransaction(id) {
 document.getElementById('edit-modal').onclick = (e) => {
   if (e.target.id === 'edit-modal') closeEditModal();
 };
+
+// --- 一括出庫 ---
+function batchRowHtml() {
+  const opts = materials.map(m =>
+    '<option value="' + m.id + '">' + esc(m.code + ' / ' + m.name) + '</option>').join('');
+  return '<td><select class="b-mat"><option value="">― 原料を選択 ―</option>' + opts + '</select></td>' +
+    '<td><input type="number" class="b-qty" step="any" min="0" placeholder="0"></td>' +
+    '<td class="b-stock num">—</td>' +
+    '<td class="b-status">—</td>' +
+    '<td><button type="button" class="mini danger" title="この行を削除">×</button></td>';
+}
+
+function addBatchRow(materialId, quantity) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = batchRowHtml();
+  document.getElementById('batch-body').appendChild(tr);
+  tr.querySelector('.b-mat').onchange = () => updateBatchRow(tr);
+  tr.querySelector('.b-qty').oninput = () => updateBatchRow(tr);
+  tr.querySelector('button').onclick = () => { tr.remove(); ensureBatchRows(); };
+  if (materialId) tr.querySelector('.b-mat').value = materialId;
+  if (quantity != null) tr.querySelector('.b-qty').value = quantity;
+  if (materialId || quantity != null) updateBatchRow(tr);
+}
+
+function updateBatchRow(tr) {
+  const m = materials.find(x => x.id === parseInt(tr.querySelector('.b-mat').value, 10));
+  const stockTd = tr.querySelector('.b-stock');
+  const statusTd = tr.querySelector('.b-status');
+  if (!m) {
+    stockTd.textContent = '—';
+    statusTd.innerHTML = '—';
+    tr.classList.remove('low');
+    return;
+  }
+  stockTd.textContent = fmt(m.stock) + ' ' + m.unit;
+  const q = parseFloat(tr.querySelector('.b-qty').value);
+  if (!(q > 0)) {
+    statusTd.innerHTML = '—';
+    tr.classList.remove('low');
+  } else if (q > m.stock) {
+    statusTd.innerHTML = '<span class="pill low">在庫不足</span>';
+    tr.classList.add('low');
+  } else {
+    statusTd.innerHTML = '<span class="pill ok">OK</span>';
+    tr.classList.remove('low');
+  }
+}
+
+function ensureBatchRows() {
+  const body = document.getElementById('batch-body');
+  while (body.children.length < 5) addBatchRow();
+}
+
+function enterBatchTab() {
+  const body = document.getElementById('batch-body');
+  const hasData = [...body.querySelectorAll('tr')].some(tr =>
+    tr.querySelector('.b-mat').value || tr.querySelector('.b-qty').value);
+  if (!hasData) body.innerHTML = '';
+  ensureBatchRows();
+}
+
+function resetBatch() {
+  document.getElementById('batch-body').innerHTML = '';
+  document.getElementById('batch-result').innerHTML = '';
+  document.getElementById('batch-line').value = '';
+  document.getElementById('batch-note').value = '';
+  ensureBatchRows();
+}
+
+async function submitBatch() {
+  const items = [];
+  for (const tr of document.querySelectorAll('#batch-body tr')) {
+    const mid = parseInt(tr.querySelector('.b-mat').value, 10);
+    const qty = parseFloat(tr.querySelector('.b-qty').value);
+    if (!mid || !(qty > 0)) continue;
+    items.push({ material_id: mid, quantity: qty });
+  }
+  if (!items.length) {
+    toast('出庫する明細を入力してください', true);
+    return;
+  }
+  const payload = {
+    line: document.getElementById('batch-line').value.trim(),
+    note: document.getElementById('batch-note').value.trim(),
+    items: items,
+  };
+  let res;
+  try {
+    res = await api('POST', '/api/transactions/batch-out', payload);
+  } catch (err) {
+    toast(err.message, true);
+    return;
+  }
+  await loadMaterials();
+  const resultEl = document.getElementById('batch-result');
+  if (!res.skipped.length) {
+    document.getElementById('batch-body').innerHTML = '';
+    document.getElementById('batch-line').value = '';
+    document.getElementById('batch-note').value = '';
+    ensureBatchRows();
+    resultEl.innerHTML = '<div class="alert ok">✓ ' + res.registered
+      + ' 件すべて出庫登録しました。</div>';
+    toast(res.registered + ' 件を出庫登録しました');
+  } else {
+    document.getElementById('batch-body').innerHTML = '';
+    for (const s of res.skipped) addBatchRow(s.material_id, s.requested);
+    ensureBatchRows();
+    const names = res.skipped.map(s =>
+      esc(s.name) + '（依頼 ' + fmt(s.requested) + ' ' + esc(s.unit)
+      + ' ／ 在庫 ' + fmt(s.available) + ' ' + esc(s.unit) + '）').join('、');
+    resultEl.innerHTML = '<div class="alert">'
+      + res.registered + ' 件を登録しました。<br>'
+      + res.skipped.length + ' 件は在庫不足のため未登録です：<br>' + names
+      + '<br>数量を調整して、もう一度「まとめて出庫登録」を押してください。</div>';
+    toast(res.registered + ' 件登録 / ' + res.skipped.length + ' 件は在庫不足', true);
+  }
+}
 
 // --- 起動 ---
 syncLineVisibility();
