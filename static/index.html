@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>倉庫在庫管理</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", "Meiryo", system-ui, sans-serif;
+    background: #f1f3f5; color: #222;
+  }
+  header {
+    background: #1f4e79; color: #fff; padding: 14px 22px;
+  }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+  nav {
+    display: flex; gap: 2px; background: #2c5f93; padding: 0 12px;
+  }
+  nav button {
+    background: transparent; border: none; color: #cfe0f0; cursor: pointer;
+    padding: 12px 18px; font-size: 14px; border-bottom: 3px solid transparent;
+  }
+  nav button:hover { color: #fff; }
+  nav button.active { color: #fff; border-bottom-color: #ffc107; font-weight: 600; }
+  main { max-width: 1000px; margin: 22px auto; padding: 0 16px; }
+  section { display: none; }
+  section.active { display: block; }
+  .card {
+    background: #fff; border: 1px solid #dee2e6; border-radius: 8px;
+    padding: 18px 20px; margin-bottom: 18px;
+  }
+  .card h2 { margin: 0 0 14px; font-size: 16px; color: #1f4e79; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid #e9ecef; }
+  th { background: #f8f9fa; color: #555; font-weight: 600; font-size: 13px; }
+  tbody tr:hover { background: #f8fbff; }
+  td.num, th.num { text-align: right; }
+  tr.low { background: #fff0f0; }
+  tr.low:hover { background: #ffe6e6; }
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 10px;
+    font-size: 12px; font-weight: 600;
+  }
+  .pill.ok { background: #e3f3e6; color: #2e7d32; }
+  .pill.low { background: #fdecea; color: #c62828; }
+  .pill.in { background: #e3f0fb; color: #1565c0; }
+  .pill.out { background: #fdf0e3; color: #e65100; }
+  .alert {
+    background: #fdecea; border: 1px solid #f5c6c2; color: #b71c1c;
+    padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: 600;
+  }
+  .alert.ok { background: #e8f5e9; border-color: #c8e6c9; color: #2e7d32; }
+  label { display: block; margin: 12px 0 4px; font-size: 13px; color: #555; }
+  input, select, textarea {
+    width: 100%; padding: 8px 10px; font-size: 14px;
+    border: 1px solid #ced4da; border-radius: 6px; font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 56px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 150px; }
+  .seg { display: flex; gap: 8px; margin-top: 4px; }
+  .seg label {
+    flex: 1; margin: 0; text-align: center; padding: 9px;
+    border: 1px solid #ced4da; border-radius: 6px; cursor: pointer; font-size: 14px;
+  }
+  .seg input { display: none; }
+  .seg input:checked + span { font-weight: 700; }
+  .seg label:has(input:checked) { border-color: #1f4e79; background: #eaf1f8; }
+  button.btn {
+    background: #1f4e79; color: #fff; border: none; border-radius: 6px;
+    padding: 10px 20px; font-size: 14px; cursor: pointer; margin-top: 16px;
+  }
+  button.btn:hover { background: #163a5a; }
+  button.btn.gray { background: #6c757d; }
+  button.btn.gray:hover { background: #565e64; }
+  button.mini {
+    background: #fff; border: 1px solid #ced4da; border-radius: 5px;
+    padding: 4px 10px; font-size: 12px; cursor: pointer; margin-right: 4px;
+  }
+  button.mini:hover { background: #f1f3f5; }
+  button.mini.danger { color: #c62828; border-color: #f1b0ac; }
+  button.mini.danger:hover { background: #fdecea; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .toolbar h2 { margin: 0; }
+  .empty { color: #888; text-align: center; padding: 26px; font-size: 14px; }
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+    background: #2e7d32; color: #fff; padding: 12px 22px; border-radius: 8px;
+    font-size: 14px; opacity: 0; transition: all .25s; pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,.2); max-width: 90%;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  .toast.error { background: #c62828; }
+  .modal-bg {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    align-items: center; justify-content: center; padding: 16px;
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    background: #fff; border-radius: 10px; padding: 22px; width: 420px; max-width: 100%;
+  }
+  .modal h3 { margin: 0 0 6px; color: #1f4e79; font-size: 16px; }
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+  .modal-actions button { margin-top: 18px; }
+  .hint { font-size: 12px; color: #888; margin-top: 4px; }
+</style>
+</head>
+<body>
+<header><h1>倉庫在庫管理</h1></header>
+<nav>
+  <button data-tab="stock" class="active">在庫一覧</button>
+  <button data-tab="register">入出庫登録</button>
+  <button data-tab="history">履歴</button>
+  <button data-tab="master">原料マスター</button>
+</nav>
+
+<main>
+  <!-- 在庫一覧 -->
+  <section id="stock" class="active">
+    <div id="stock-alert"></div>
+    <div class="card">
+      <div class="toolbar">
+        <h2>原料の現在庫</h2>
+        <button class="mini" onclick="loadMaterials()">再読み込み</button>
+      </div>
+      <table>
+        <thead><tr>
+          <th>コード</th><th>原料名</th><th class="num">現在庫</th>
+          <th class="num">発注点</th><th>仕入先</th><th>状態</th>
+        </tr></thead>
+        <tbody id="stock-body"></tbody>
+      </table>
+      <div id="stock-empty" class="empty" style="display:none">
+        原料が登録されていません。「原料マスター」タブから登録してください。
+      </div>
+    </div>
+  </section>
+
+  <!-- 入出庫登録 -->
+  <section id="register">
+    <div class="card">
+      <h2>入出庫の登録</h2>
+      <form id="tx-form" autocomplete="off">
+        <label>区分</label>
+        <div class="seg">
+          <label><input type="radio" name="txtype" value="in" checked><span>入庫</span></label>
+          <label><input type="radio" name="txtype" value="out"><span>出庫</span></label>
+        </div>
+        <label>原料</label>
+        <select id="tx-material" required></select>
+        <div class="row">
+          <div>
+            <label>数量</label>
+            <input type="number" id="tx-qty" step="any" min="0" required placeholder="例: 25">
+          </div>
+          <div id="tx-line-wrap">
+            <label>払出ライン（出庫先）</label>
+            <input type="text" id="tx-line" placeholder="例: 第1ライン">
+          </div>
+        </div>
+        <label>備考</label>
+        <textarea id="tx-note" placeholder="任意"></textarea>
+        <button type="submit" class="btn">登録する</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- 履歴 -->
+  <section id="history">
+    <div class="card">
+      <div class="toolbar">
+        <h2>入出庫の履歴</h2>
+        <div style="width:240px">
+          <select id="hist-filter" onchange="loadTransactions()"></select>
+        </div>
+      </div>
+      <table>
+        <thead><tr>
+          <th>日時</th><th>区分</th><th>原料</th><th class="num">数量</th>
+          <th>ライン</th><th>備考</th><th>操作</th>
+        </tr></thead>
+        <tbody id="hist-body"></tbody>
+      </table>
+      <div id="hist-empty" class="empty" style="display:none">履歴がありません。</div>
+    </div>
+  </section>
+
+  <!-- 原料マスター -->
+  <section id="master">
+    <div class="card">
+      <h2 id="mat-form-title">原料の新規登録</h2>
+      <form id="mat-form" autocomplete="off">
+        <input type="hidden" id="mat-id">
+        <div class="row">
+          <div>
+            <label>原料コード</label>
+            <input type="text" id="mat-code" required placeholder="例: M-001">
+          </div>
+          <div>
+            <label>原料名</label>
+            <input type="text" id="mat-name" required placeholder="例: 小麦粉">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>単位</label>
+            <input type="text" id="mat-unit" value="kg" placeholder="kg / 個 など">
+          </div>
+          <div>
+            <label>発注点</label>
+            <input type="number" id="mat-reorder" step="any" min="0" value="0">
+            <div class="hint">この数量以下になるとアラート表示（0 ならアラートなし）</div>
+          </div>
+          <div>
+            <label>仕入先</label>
+            <input type="text" id="mat-supplier" placeholder="任意">
+          </div>
+        </div>
+        <button type="submit" class="btn" id="mat-submit">登録する</button>
+        <button type="button" class="btn gray" id="mat-cancel" style="display:none"
+          onclick="resetMaterialForm()">キャンセル</button>
+      </form>
+    </div>
+    <div class="card">
+      <h2>登録済みの原料</h2>
+      <table>
+        <thead><tr>
+          <th>コード</th><th>原料名</th><th>単位</th>
+          <th class="num">発注点</th><th>仕入先</th><th>操作</th>
+        </tr></thead>
+        <tbody id="mat-body"></tbody>
+      </table>
+      <div id="mat-empty" class="empty" style="display:none">原料が登録されていません。</div>
+    </div>
+  </section>
+</main>
+
+<!-- 履歴の編集モーダル -->
+<div class="modal-bg" id="edit-modal">
+  <div class="modal">
+    <h3>履歴の編集</h3>
+    <form id="edit-form">
+      <input type="hidden" id="edit-id">
+      <label>区分</label>
+      <div class="seg">
+        <label><input type="radio" name="edittype" value="in"><span>入庫</span></label>
+        <label><input type="radio" name="edittype" value="out"><span>出庫</span></label>
+      </div>
+      <label>原料</label>
+      <select id="edit-material" required></select>
+      <label>数量</label>
+      <input type="number" id="edit-qty" step="any" min="0" required>
+      <label>払出ライン</label>
+      <input type="text" id="edit-line">
+      <label>備考</label>
+      <textarea id="edit-note"></textarea>
+      <div class="modal-actions">
+        <button type="button" class="btn gray" onclick="closeEditModal()">キャンセル</button>
+        <button type="submit" class="btn">保存する</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let materials = [];
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+function fmt(n) {
+  return Number(n).toLocaleString('ja-JP', { maximumFractionDigits: 3 });
+}
+function toast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(() => { t.className = 'toast'; }, 3200);
+}
+
+async function api(method, path, body) {
+  const opt = { method, headers: {} };
+  if (body !== undefined) {
+    opt.headers['Content-Type'] = 'application/json';
+    opt.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opt);
+  if (!res.ok) {
+    let msg = 'エラーが発生しました';
+    try {
+      const j = await res.json();
+      if (typeof j.detail === 'string') msg = j.detail;
+      else if (j.detail) msg = '入力内容を確認してください';
+    } catch (e) {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+// --- タブ切り替え ---
+document.querySelectorAll('nav button').forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('section').forEach(s => s.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'history') loadTransactions();
+  };
+});
+
+// --- 原料マスターの読み込み・描画 ---
+async function loadMaterials() {
+  try {
+    materials = await api('GET', '/api/materials');
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  renderStock();
+  renderMaterialTable();
+  fillMaterialSelects();
+}
+
+function renderStock() {
+  const body = document.getElementById('stock-body');
+  const empty = document.getElementById('stock-empty');
+  const alert = document.getElementById('stock-alert');
+  body.innerHTML = '';
+  empty.style.display = materials.length ? 'none' : 'block';
+
+  const lowCount = materials.filter(m => m.low).length;
+  if (!materials.length) {
+    alert.innerHTML = '';
+  } else if (lowCount > 0) {
+    alert.innerHTML = '<div class="alert">⚠ 発注点を下回っている原料が '
+      + lowCount + ' 件あります。発注を検討してください。</div>';
+  } else {
+    alert.innerHTML = '<div class="alert ok">✓ 発注点を下回っている原料はありません。</div>';
+  }
+
+  for (const m of materials) {
+    const tr = document.createElement('tr');
+    if (m.low) tr.className = 'low';
+    tr.innerHTML =
+      '<td>' + esc(m.code) + '</td>' +
+      '<td>' + esc(m.name) + '</td>' +
+      '<td class="num"><b>' + fmt(m.stock) + '</b> ' + esc(m.unit) + '</td>' +
+      '<td class="num">' + fmt(m.reorder_point) + ' ' + esc(m.unit) + '</td>' +
+      '<td>' + esc(m.supplier) + '</td>' +
+      '<td>' + (m.low
+        ? '<span class="pill low">発注点割れ</span>'
+        : '<span class="pill ok">適正</span>') + '</td>';
+    body.appendChild(tr);
+  }
+}
+
+function renderMaterialTable() {
+  const body = document.getElementById('mat-body');
+  document.getElementById('mat-empty').style.display = materials.length ? 'none' : 'block';
+  body.innerHTML = '';
+  for (const m of materials) {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + esc(m.code) + '</td>' +
+      '<td>' + esc(m.name) + '</td>' +
+      '<td>' + esc(m.unit) + '</td>' +
+      '<td class="num">' + fmt(m.reorder_point) + '</td>' +
+      '<td>' + esc(m.supplier) + '</td>' +
+      '<td><button class="mini" onclick="editMaterial(' + m.id + ')">編集</button>' +
+      '<button class="mini danger" onclick="deleteMaterial(' + m.id + ')">削除</button></td>';
+    body.appendChild(tr);
+  }
+}
+
+function fillMaterialSelects() {
+  const opts = materials.map(m =>
+    '<option value="' + m.id + '">' + esc(m.code + ' / ' + m.name) + '</option>').join('');
+  document.getElementById('tx-material').innerHTML =
+    materials.length ? opts : '<option value="">原料を先に登録してください</option>';
+  document.getElementById('edit-material').innerHTML = opts;
+  const filter = document.getElementById('hist-filter');
+  const cur = filter.value;
+  filter.innerHTML = '<option value="">すべての原料</option>' + opts;
+  filter.value = cur;
+}
+
+// --- 原料マスター 登録/更新/削除 ---
+document.getElementById('mat-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('mat-id').value;
+  const payload = {
+    code: document.getElementById('mat-code').value.trim(),
+    name: document.getElementById('mat-name').value.trim(),
+    unit: document.getElementById('mat-unit').value.trim() || 'kg',
+    reorder_point: parseFloat(document.getElementById('mat-reorder').value) || 0,
+    supplier: document.getElementById('mat-supplier').value.trim(),
+  };
+  try {
+    if (id) {
+      await api('PUT', '/api/materials/' + id, payload);
+      toast('原料を更新しました');
+    } else {
+      await api('POST', '/api/materials', payload);
+      toast('原料を登録しました');
+    }
+    resetMaterialForm();
+    await loadMaterials();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+function editMaterial(id) {
+  const m = materials.find(x => x.id === id);
+  if (!m) return;
+  document.getElementById('mat-id').value = m.id;
+  document.getElementById('mat-code').value = m.code;
+  document.getElementById('mat-name').value = m.name;
+  document.getElementById('mat-unit').value = m.unit;
+  document.getElementById('mat-reorder').value = m.reorder_point;
+  document.getElementById('mat-supplier').value = m.supplier;
+  document.getElementById('mat-form-title').textContent = '原料の編集（' + m.code + '）';
+  document.getElementById('mat-submit').textContent = '更新する';
+  document.getElementById('mat-cancel').style.display = 'inline-block';
+  document.getElementById('master').scrollIntoView({ behavior: 'smooth' });
+}
+
+function resetMaterialForm() {
+  document.getElementById('mat-form').reset();
+  document.getElementById('mat-id').value = '';
+  document.getElementById('mat-unit').value = 'kg';
+  document.getElementById('mat-reorder').value = '0';
+  document.getElementById('mat-form-title').textContent = '原料の新規登録';
+  document.getElementById('mat-submit').textContent = '登録する';
+  document.getElementById('mat-cancel').style.display = 'none';
+}
+
+async function deleteMaterial(id) {
+  const m = materials.find(x => x.id === id);
+  if (!m) return;
+  if (!confirm('原料「' + m.name + '」を削除します。\nこの原料の入出庫履歴もすべて削除されます。よろしいですか？'))
+    return;
+  try {
+    await api('DELETE', '/api/materials/' + id);
+    toast('原料を削除しました');
+    await loadMaterials();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// --- 入出庫登録 ---
+function syncLineVisibility() {
+  const isOut = document.querySelector('input[name=txtype]:checked').value === 'out';
+  document.getElementById('tx-line-wrap').style.display = isOut ? 'block' : 'none';
+}
+document.querySelectorAll('input[name=txtype]').forEach(r => r.onchange = syncLineVisibility);
+
+document.getElementById('tx-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const mid = parseInt(document.getElementById('tx-material').value, 10);
+  if (!mid) { toast('原料を選択してください', true); return; }
+  const type = document.querySelector('input[name=txtype]:checked').value;
+  const payload = {
+    material_id: mid,
+    type: type,
+    quantity: parseFloat(document.getElementById('tx-qty').value),
+    line: type === 'out' ? document.getElementById('tx-line').value.trim() : '',
+    note: document.getElementById('tx-note').value.trim(),
+  };
+  if (!(payload.quantity > 0)) { toast('数量は 0 より大きい値を入力してください', true); return; }
+  try {
+    await api('POST', '/api/transactions', payload);
+    toast((type === 'in' ? '入庫' : '出庫') + 'を登録しました');
+    document.getElementById('tx-qty').value = '';
+    document.getElementById('tx-line').value = '';
+    document.getElementById('tx-note').value = '';
+    await loadMaterials();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+// --- 履歴 ---
+async function loadTransactions() {
+  const filter = document.getElementById('hist-filter').value;
+  const path = '/api/transactions' + (filter ? '?material_id=' + filter : '');
+  let rows;
+  try {
+    rows = await api('GET', path);
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  const body = document.getElementById('hist-body');
+  document.getElementById('hist-empty').style.display = rows.length ? 'none' : 'block';
+  body.innerHTML = '';
+  for (const t of rows) {
+    const tr = document.createElement('tr');
+    const badge = t.type === 'in'
+      ? '<span class="pill in">入庫</span>'
+      : '<span class="pill out">出庫</span>';
+    tr.innerHTML =
+      '<td>' + esc(t.created_at) + '</td>' +
+      '<td>' + badge + '</td>' +
+      '<td>' + esc(t.material_code + ' / ' + t.material_name) + '</td>' +
+      '<td class="num">' + fmt(t.quantity) + ' ' + esc(t.unit) + '</td>' +
+      '<td>' + esc(t.line) + '</td>' +
+      '<td>' + esc(t.note) + '</td>' +
+      '<td><button class="mini" onclick="openEditModal(' + t.id + ')">編集</button>' +
+      '<button class="mini danger" onclick="deleteTransaction(' + t.id + ')">削除</button></td>';
+    body.appendChild(tr);
+  }
+}
+
+let editRows = [];
+async function openEditModal(id) {
+  try {
+    editRows = await api('GET', '/api/transactions');
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  const t = editRows.find(x => x.id === id);
+  if (!t) { toast('履歴が見つかりません', true); return; }
+  document.getElementById('edit-id').value = t.id;
+  document.querySelector('input[name=edittype][value=' + t.type + ']').checked = true;
+  document.getElementById('edit-material').value = t.material_id;
+  document.getElementById('edit-qty').value = t.quantity;
+  document.getElementById('edit-line').value = t.line;
+  document.getElementById('edit-note').value = t.note;
+  document.getElementById('edit-modal').classList.add('show');
+}
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.remove('show');
+}
+
+document.getElementById('edit-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const id = document.getElementById('edit-id').value;
+  const payload = {
+    material_id: parseInt(document.getElementById('edit-material').value, 10),
+    type: document.querySelector('input[name=edittype]:checked').value,
+    quantity: parseFloat(document.getElementById('edit-qty').value),
+    line: document.getElementById('edit-line').value.trim(),
+    note: document.getElementById('edit-note').value.trim(),
+  };
+  if (!(payload.quantity > 0)) { toast('数量は 0 より大きい値を入力してください', true); return; }
+  try {
+    await api('PUT', '/api/transactions/' + id, payload);
+    toast('履歴を更新しました');
+    closeEditModal();
+    await loadTransactions();
+    await loadMaterials();
+  } catch (err) {
+    toast(err.message, true);
+  }
+};
+
+async function deleteTransaction(id) {
+  if (!confirm('この入出庫の記録を削除します。よろしいですか？')) return;
+  try {
+    await api('DELETE', '/api/transactions/' + id);
+    toast('履歴を削除しました');
+    await loadTransactions();
+    await loadMaterials();
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+document.getElementById('edit-modal').onclick = (e) => {
+  if (e.target.id === 'edit-modal') closeEditModal();
+};
+
+// --- 起動 ---
+syncLineVisibility();
+loadMaterials();
+</script>
+</body>
+</html>
