@@ -110,7 +110,7 @@
   .b-qty { text-align: right; }
   #batch-body td { vertical-align: middle; }
   #batch-result:not(:empty), #import-result:not(:empty),
-  #register-result:not(:empty) { margin-top: 14px; }
+  #register-result:not(:empty), #inbound-result:not(:empty) { margin-top: 14px; }
   .catalog-box {
     border: 1px solid #ced4da; border-radius: 6px;
     max-height: 280px; overflow-y: auto; margin-top: 6px;
@@ -184,6 +184,21 @@
         <textarea id="tx-note" placeholder="任意"></textarea>
         <button type="submit" class="btn">登録する</button>
       </form>
+    </div>
+    <div class="card">
+      <h2>入庫記録の Excel 取り込み</h2>
+      <p class="hint">入庫記録の Excel ファイル（.xlsx）を選ぶと、入庫履歴に取り込みます。
+        「Fr商品コード」で原料を判定し、「個数」を入庫数として「納品日」付けで記録します。
+        カタログのままの原料は、保管温度に応じて自動で在庫登録します。
+        すでに取り込んだ行は二重に登録されないので、くり返し取り込めます。</p>
+      <div class="row">
+        <div>
+          <label>入庫記録の Excel ファイル</label>
+          <input type="file" id="inbound-file" accept=".xlsx">
+        </div>
+      </div>
+      <button type="button" class="btn" onclick="importInbound()">取り込む</button>
+      <div id="inbound-result"></div>
     </div>
   </section>
 
@@ -273,7 +288,7 @@
           </div>
           <div>
             <label>単位</label>
-            <input type="text" id="mat-unit" value="kg" placeholder="kg / 個 など">
+            <input type="text" id="mat-unit" value="個" placeholder="個 / 袋 / kg など">
           </div>
           <div>
             <label>発注点</label>
@@ -293,8 +308,9 @@
     <div class="card">
       <h2>Excel から一括取り込み（カタログ作成）</h2>
       <p class="hint">原料一覧の Excel ファイル（.xlsx）を選ぶと、全商品を「カタログ」に取り込みます。
-        見出し行（「ｺｰﾄﾞ」の列）を自動で探し、コード／一般名称／原材料名／単位／仕入先を読み取ります。
-        すでに同じコードがある原料は、一般名称・原材料名・単位・仕入先を最新に更新します
+        見出し行（「ｺｰﾄﾞ」の列）を自動で探し、コード／一般名称／原材料名／仕入先を読み取ります
+        （単位は「個」で登録。あとで原料ごとに変更可）。
+        すでに同じコードがある原料は、一般名称・原材料名・仕入先を最新に更新します
         （保管場所・発注点・登録状態は維持）。
         実際に在庫する原料は、下の「一覧から原料を登録」で選んでください。</p>
       <div class="row">
@@ -539,7 +555,7 @@ document.getElementById('mat-form').onsubmit = async (e) => {
     name: document.getElementById('mat-name').value.trim(),
     product_name: document.getElementById('mat-product').value.trim(),
     location: document.getElementById('mat-location').value,
-    unit: document.getElementById('mat-unit').value.trim() || 'kg',
+    unit: document.getElementById('mat-unit').value.trim() || '個',
     reorder_point: parseFloat(document.getElementById('mat-reorder').value) || 0,
     supplier: document.getElementById('mat-supplier').value.trim(),
   };
@@ -579,7 +595,7 @@ function resetMaterialForm() {
   document.getElementById('mat-form').reset();
   document.getElementById('mat-id').value = '';
   document.getElementById('mat-location').value = '倉庫';
-  document.getElementById('mat-unit').value = 'kg';
+  document.getElementById('mat-unit').value = '個';
   document.getElementById('mat-reorder').value = '0';
   document.getElementById('mat-form-title').textContent = '原料の新規登録';
   document.getElementById('mat-submit').textContent = '登録する';
@@ -701,6 +717,50 @@ async function importMaterials() {
     + '。下の「一覧から原料を登録」で在庫する原料を選んでください。</div>';
   fileEl.value = '';
   await loadCatalog();
+  await loadMaterials();
+}
+
+async function importInbound() {
+  const fileEl = document.getElementById('inbound-file');
+  const resultEl = document.getElementById('inbound-result');
+  if (!fileEl.files.length) {
+    toast('Excel ファイルを選んでください', true);
+    return;
+  }
+  const fd = new FormData();
+  fd.append('file', fileEl.files[0]);
+  resultEl.innerHTML = '<div class="alert ok">取り込み中です… しばらくお待ちください。</div>';
+  let res;
+  try {
+    const r = await fetch('/api/import/transactions', { method: 'POST', body: fd });
+    if (!r.ok) {
+      let msg = '取り込みに失敗しました';
+      try {
+        const j = await r.json();
+        if (typeof j.detail === 'string') msg = j.detail;
+      } catch (e) {}
+      throw new Error(msg);
+    }
+    res = await r.json();
+  } catch (err) {
+    resultEl.innerHTML = '<div class="alert">取り込みに失敗しました：'
+      + esc(err.message) + '</div>';
+    return;
+  }
+  let msg = '取り込み完了：' + res.imported + ' 件の入庫を登録';
+  if (res.skipped_dup) msg += '、' + res.skipped_dup + ' 件は取り込み済みのためスキップ';
+  if (res.auto_registered) {
+    msg += '、' + res.auto_registered + ' 件の原料を自動で在庫登録';
+  }
+  msg += '。';
+  if (res.unknown && res.unknown.length) {
+    msg += '<br>※ カタログに無いコードが ' + res.unknown.length
+      + ' 件あり、その行は取り込めませんでした'
+      + '（先に「原料マスター」で原料一覧Excelを取り込んでください）：'
+      + esc(res.unknown.slice(0, 30).join('、'));
+  }
+  resultEl.innerHTML = '<div class="alert ok">' + msg + '</div>';
+  fileEl.value = '';
   await loadMaterials();
 }
 

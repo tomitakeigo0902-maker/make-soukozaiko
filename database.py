@@ -59,6 +59,7 @@ def init_db() -> None:
                 quantity    REAL NOT NULL CHECK (quantity > 0),
                 line        TEXT NOT NULL DEFAULT '',
                 note        TEXT NOT NULL DEFAULT '',
+                import_key  TEXT NOT NULL DEFAULT '',
                 created_at  TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
 
@@ -79,4 +80,9 @@ def init_db() -> None:
         if "active" not in cols:
             conn.execute(
                 "ALTER TABLE materials ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+            )
+        tx_cols = [r["name"] for r in conn.execute("PRAGMA table_info(transactions)")]
+        if "import_key" not in tx_cols:
+            conn.execute(
+                "ALTER TABLE transactions ADD COLUMN import_key TEXT NOT NULL DEFAULT ''"
             )

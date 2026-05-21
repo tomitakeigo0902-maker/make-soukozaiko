@@ -5,6 +5,8 @@
 社内の各 PC からブラウザで http://サーバー名:8000/ にアクセスできる。
 """
 
+import datetime
+import hashlib
 import io
 import os
 import re
@@ -50,7 +52,7 @@ class MaterialIn(BaseModel):
     code: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=100)
     product_name: str = Field(default="", max_length=100)
-    unit: str = Field(default="kg", max_length=20)
+    unit: str = Field(default="個", max_length=20)
     reorder_point: float = Field(default=0, ge=0)
     supplier: str = Field(default="", max_length=100)
     location: Literal["倉庫", "冷蔵庫", "冷凍庫"] = "倉庫"
@@ -104,10 +106,43 @@ def _cell_str(v) -> str:
     return str(v).strip()
 
 
-def _unit_from_pack(pack: str) -> str:
-    """入数（例「25kg」）の末尾から単位を取り出す。取れなければ kg。"""
-    m = re.search(r"([^\d.\s]+)$", pack)
-    return m.group(1) if m else "kg"
+def _norm(s: str) -> str:
+    """見出しセルの改行・空白を取り除いて比較しやすくする。"""
+    return s.replace("\n", "").replace("\r", "").replace(" ", "").replace("　", "")
+
+
+def _parse_inbound_date(v) -> str:
+    """納品日を YYYY-MM-DD 文字列にする。年が無ければ今年とみなす。"""
+    if isinstance(v, datetime.datetime):
+        return v.strftime("%Y-%m-%d")
+    if isinstance(v, datetime.date):
+        return v.strftime("%Y-%m-%d")
+    m = re.match(r"(?:(\d{2,4})/)?(\d{1,2})/(\d{1,2})$", _cell_str(v))
+    if m:
+        year = datetime.date.today().year if m.group(1) is None else int(m.group(1))
+        if year < 100:
+            year += 2000
+        try:
+            return datetime.date(
+                year, int(m.group(2)), int(m.group(3))
+            ).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+    return datetime.date.today().strftime("%Y-%m-%d")
+
+
+def _temp_to_location(temp: str) -> str:
+    """保管温度の表記から保管場所（倉庫／冷蔵庫／冷凍庫）を判定する。"""
+    if "冷凍" in temp:
+        return "冷凍庫"
+    if "冷蔵" in temp or "チルド" in temp or "ﾁﾙﾄﾞ" in temp:
+        return "冷蔵庫"
+    return "倉庫"
+
+
+def _row_fingerprint(values) -> str:
+    """入庫記録1行の指紋（再取り込み時の二重登録を防ぐ）。"""
+    return hashlib.sha1("|".join(values).encode("utf-8")).hexdigest()[:16]
 
 
 # --- 原料マスター API ---------------------------------------------------------
@@ -343,7 +378,7 @@ async def import_materials(file: UploadFile = File(...)):
     header = []
     header_idx = None
     for i, row in enumerate(rows[:15]):
-        cells = [_cell_str(c) for c in row]
+        cells = [_norm(_cell_str(c)) for c in row]
         if "ｺｰﾄﾞ" in cells or "コード" in cells:
             header, header_idx = cells, i
             break
@@ -359,7 +394,6 @@ async def import_materials(file: UploadFile = File(...)):
     c_code = find("ｺｰﾄﾞ", "コード")
     c_name = find("一般名称")
     c_product = find("原材料名")
-    c_pack = find("入数")
     c_supplier = find("購入元1", "購入元")
     if c_code is None:
         raise HTTPException(400, "「ｺｰﾄﾞ」の列が見つかりませんでした")
@@ -379,7 +413,7 @@ async def import_materials(file: UploadFile = File(...)):
                 continue
             name = cell(row, c_name)
             product = cell(row, c_product)
-            unit = _unit_from_pack(cell(row, c_pack))
+            unit = "個"
             supplier = cell(row, c_supplier)
             if code in existing:
                 # 既存はExcel由来の項目だけ更新（保管場所・発注点・登録状態は維持）
@@ -401,6 +435,133 @@ async def import_materials(file: UploadFile = File(...)):
                 existing.add(code)
                 imported += 1
     return {"imported": imported, "updated": updated}
+
+
+@app.post("/api/import/transactions")
+async def import_transactions(file: UploadFile = File(...)):
+    """入庫記録の Excel(.xlsx) を読み込み、入庫履歴へ取り込む。
+
+    Fr商品コードで原料を特定し、個数を入庫数量として記録する。
+    カタログのままの原料は保管温度に応じて自動で在庫登録する。
+    各行の指紋を import_key に保存し、再取り込み時の二重登録を防ぐ。
+    """
+    content = await file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception:
+        raise HTTPException(
+            400, "Excel ファイルとして読み込めませんでした。.xlsx 形式か確認してください"
+        )
+    try:
+        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+
+    header = []
+    header_idx = None
+    for i, row in enumerate(rows[:15]):
+        cells = [_norm(_cell_str(c)) for c in row]
+        if "Fr商品コード" in cells:
+            header, header_idx = cells, i
+            break
+    if header_idx is None:
+        raise HTTPException(400, "見出し行（「Fr商品コード」の列）が見つかりませんでした")
+
+    def find(*names):
+        for n in names:
+            if n in header:
+                return header.index(n)
+        return None
+
+    c_code = find("Fr商品コード")
+    c_qty = find("個数")
+    c_date = find("納品日")
+    c_temp = find("保管温度")
+    c_maker = find("仕入メーカー", "請求先")
+    c_pack = find("単位")
+    c_order = find("発注日")
+    c_other = find("相手商品コード")
+    c_name = find("品名")
+    if c_code is None or c_qty is None:
+        raise HTTPException(
+            400, "「Fr商品コード」または「個数」の列が見つかりませんでした"
+        )
+
+    def cell(row, idx):
+        if idx is None or idx >= len(row):
+            return ""
+        return _cell_str(row[idx])
+
+    def raw(row, idx):
+        if idx is None or idx >= len(row):
+            return None
+        return row[idx]
+
+    imported = 0
+    skipped_dup = 0
+    auto_registered = 0
+    unknown = []
+    seen: dict[str, int] = {}
+    with get_conn() as conn:
+        mats = {
+            r["code"]: dict(r)
+            for r in conn.execute("SELECT id, code, active FROM materials")
+        }
+        existing_keys = {
+            r["import_key"]
+            for r in conn.execute(
+                "SELECT import_key FROM transactions WHERE import_key != ''"
+            )
+        }
+        for row in rows[header_idx + 1:]:
+            code = cell(row, c_code)
+            if not code:
+                continue
+            try:
+                qty = float(cell(row, c_qty))
+            except ValueError:
+                qty = 0
+            if qty <= 0:
+                continue
+            mat = mats.get(code)
+            if mat is None:
+                if code not in unknown:
+                    unknown.append(code)
+                continue
+            if not mat["active"]:
+                conn.execute(
+                    "UPDATE materials SET active = 1, location = ? WHERE id = ?",
+                    (_temp_to_location(cell(row, c_temp)), mat["id"]),
+                )
+                mat["active"] = 1
+                auto_registered += 1
+            base = _row_fingerprint([
+                code, cell(row, c_order), cell(row, c_date), cell(row, c_qty),
+                cell(row, c_other), cell(row, c_maker), cell(row, c_name),
+                cell(row, c_pack),
+            ])
+            seen[base] = seen.get(base, 0) + 1
+            key = f"{base}/{seen[base]}"
+            if key in existing_keys:
+                skipped_dup += 1
+                continue
+            note = " ".join(
+                p for p in [cell(row, c_maker), cell(row, c_pack)] if p
+            )
+            conn.execute(
+                "INSERT INTO transactions "
+                "(material_id, type, quantity, line, note, import_key, created_at) "
+                "VALUES (?, 'in', ?, '', ?, ?, ?)",
+                (mat["id"], qty, note, key, _parse_inbound_date(raw(row, c_date))),
+            )
+            existing_keys.add(key)
+            imported += 1
+    return {
+        "imported": imported,
+        "skipped_dup": skipped_dup,
+        "auto_registered": auto_registered,
+        "unknown": unknown,
+    }
 
 
 # --- 画面 ---------------------------------------------------------------------
