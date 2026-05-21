@@ -41,6 +41,7 @@
   tr.group td {
     background: #e9eef3; font-weight: 700; color: #1f4e79; font-size: 13px;
   }
+  tr.group.unassigned td { background: #fff4e5; color: #a85800; }
   .pill {
     display: inline-block; padding: 2px 9px; border-radius: 10px;
     font-size: 12px; font-weight: 600;
@@ -54,6 +55,7 @@
     padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: 600;
   }
   .alert.ok { background: #e8f5e9; border-color: #c8e6c9; color: #2e7d32; }
+  .alert.warn { background: #fff4e5; border-color: #ffd9a0; color: #a85800; }
   label { display: block; margin: 12px 0 4px; font-size: 13px; color: #555; }
   input, select, textarea {
     width: 100%; padding: 8px 10px; font-size: 14px;
@@ -188,8 +190,10 @@
     <div class="card">
       <h2>入庫記録の Excel 取り込み</h2>
       <p class="hint">入庫記録の Excel ファイル（.xlsx）を選ぶと、入庫履歴に取り込みます。
-        「Fr商品コード」で原料を判定し、「個数」を入庫数として「納品日」付けで記録します。
-        カタログのままの原料は、保管温度に応じて自動で在庫登録します。
+        原料用・包材用どちらの様式にも対応します。商品コード（見つからなければ品名）で
+        原料・包材を判定し、「個数」を入庫数として「納品日」付けで記録します。
+        カタログのままの原料は自動で在庫登録します（保管場所は「未割り当て」。
+        在庫一覧の上部に表示されるので、あとで設定してください）。
         すでに取り込んだ行は二重に登録されないので、くり返し取り込めます。</p>
       <div class="row">
         <div>
@@ -284,6 +288,7 @@
               <option value="倉庫">倉庫</option>
               <option value="冷蔵庫">冷蔵庫</option>
               <option value="冷凍庫">冷凍庫</option>
+              <option value="未割り当て">未割り当て</option>
             </select>
           </div>
           <div>
@@ -392,7 +397,7 @@
 <script>
 let materials = [];
 let catalog = [];
-const LOCATIONS = ['倉庫', '冷蔵庫', '冷凍庫'];
+const LOCATIONS = ['未割り当て', '倉庫', '冷蔵庫', '冷凍庫'];
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -461,22 +466,30 @@ function renderStock() {
   body.innerHTML = '';
   empty.style.display = materials.length ? 'none' : 'block';
 
-  const lowCount = materials.filter(m => m.low).length;
-  if (!materials.length) {
-    alert.innerHTML = '';
-  } else if (lowCount > 0) {
-    alert.innerHTML = '<div class="alert">⚠ 発注点を下回っている原料が '
-      + lowCount + ' 件あります。発注を検討してください。</div>';
-  } else {
-    alert.innerHTML = '<div class="alert ok">✓ 発注点を下回っている原料はありません。</div>';
+  let alertHtml = '';
+  const unassigned = materials.filter(m => (m.location || '倉庫') === '未割り当て').length;
+  if (unassigned > 0) {
+    alertHtml += '<div class="alert warn">📍 保管場所が未設定の原料が ' + unassigned
+      + ' 件あります。下の「未割り当て」欄を確認し、'
+      + '原料マスターの「編集」で保管場所を設定してください。</div>';
   }
+  const lowCount = materials.filter(m => m.low).length;
+  if (materials.length && lowCount > 0) {
+    alertHtml += '<div class="alert">⚠ 発注点を下回っている原料が '
+      + lowCount + ' 件あります。発注を検討してください。</div>';
+  } else if (materials.length && lowCount === 0 && unassigned === 0) {
+    alertHtml += '<div class="alert ok">✓ 発注点を下回っている原料はありません。</div>';
+  }
+  alert.innerHTML = alertHtml;
 
   for (const loc of LOCATIONS) {
     const group = materials.filter(m => (m.location || '倉庫') === loc);
     if (!group.length) continue;
     const gh = document.createElement('tr');
-    gh.className = 'group';
-    gh.innerHTML = '<td colspan="7">' + esc(loc) + '（' + group.length + ' 品目）</td>';
+    gh.className = loc === '未割り当て' ? 'group unassigned' : 'group';
+    const label = loc === '未割り当て'
+      ? '未割り当て（保管場所を設定してください）' : loc;
+    gh.innerHTML = '<td colspan="7">' + esc(label) + '　' + group.length + ' 品目</td>';
     body.appendChild(gh);
     for (const m of group) {
       const tr = document.createElement('tr');
@@ -750,13 +763,14 @@ async function importInbound() {
   let msg = '取り込み完了：' + res.imported + ' 件の入庫を登録';
   if (res.skipped_dup) msg += '、' + res.skipped_dup + ' 件は取り込み済みのためスキップ';
   if (res.auto_registered) {
-    msg += '、' + res.auto_registered + ' 件の原料を自動で在庫登録';
+    msg += '、' + res.auto_registered
+      + ' 件を自動で在庫登録（保管場所は「未割り当て」。在庫一覧の上部に表示）';
   }
   msg += '。';
   if (res.unknown && res.unknown.length) {
-    msg += '<br>※ カタログに無いコードが ' + res.unknown.length
+    msg += '<br>※ カタログで見つからない原料・包材が ' + res.unknown.length
       + ' 件あり、その行は取り込めませんでした'
-      + '（先に「原料マスター」で原料一覧Excelを取り込んでください）：'
+      + '（先に「原料マスター」で一覧Excelを取り込んでください）：'
       + esc(res.unknown.slice(0, 30).join('、'));
   }
   resultEl.innerHTML = '<div class="alert ok">' + msg + '</div>';

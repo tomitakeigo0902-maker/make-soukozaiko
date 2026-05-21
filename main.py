@@ -55,7 +55,7 @@ class MaterialIn(BaseModel):
     unit: str = Field(default="個", max_length=20)
     reorder_point: float = Field(default=0, ge=0)
     supplier: str = Field(default="", max_length=100)
-    location: Literal["倉庫", "冷蔵庫", "冷凍庫"] = "倉庫"
+    location: Literal["倉庫", "冷蔵庫", "冷凍庫", "未割り当て"] = "倉庫"
 
 
 class TransactionIn(BaseModel):
@@ -129,15 +129,6 @@ def _parse_inbound_date(v) -> str:
         except ValueError:
             pass
     return datetime.date.today().strftime("%Y-%m-%d")
-
-
-def _temp_to_location(temp: str) -> str:
-    """保管温度の表記から保管場所（倉庫／冷蔵庫／冷凍庫）を判定する。"""
-    if "冷凍" in temp:
-        return "冷凍庫"
-    if "冷蔵" in temp or "チルド" in temp or "ﾁﾙﾄﾞ" in temp:
-        return "冷蔵庫"
-    return "倉庫"
 
 
 def _row_fingerprint(values) -> str:
@@ -439,10 +430,11 @@ async def import_materials(file: UploadFile = File(...)):
 
 @app.post("/api/import/transactions")
 async def import_transactions(file: UploadFile = File(...)):
-    """入庫記録の Excel(.xlsx) を読み込み、入庫履歴へ取り込む。
+    """入庫記録の Excel(.xlsx) を読み込み、入庫履歴へ取り込む（原料用・包材用に対応）。
 
-    Fr商品コードで原料を特定し、個数を入庫数量として記録する。
-    カタログのままの原料は保管温度に応じて自動で在庫登録する。
+    商品コードで原料を特定し、見つからなければ品名で照合する。
+    個数を入庫数量として記録し、カタログのままの原料は自動で在庫登録する
+    （保管場所は「未割り当て」）。
     各行の指紋を import_key に保存し、再取り込み時の二重登録を防ぐ。
     """
     content = await file.read()
@@ -461,11 +453,13 @@ async def import_transactions(file: UploadFile = File(...)):
     header_idx = None
     for i, row in enumerate(rows[:15]):
         cells = [_norm(_cell_str(c)) for c in row]
-        if "Fr商品コード" in cells:
+        if "Fr商品コード" in cells or "商品コード" in cells:
             header, header_idx = cells, i
             break
     if header_idx is None:
-        raise HTTPException(400, "見出し行（「Fr商品コード」の列）が見つかりませんでした")
+        raise HTTPException(
+            400, "見出し行（「Fr商品コード」または「商品コード」の列）が見つかりませんでした"
+        )
 
     def find(*names):
         for n in names:
@@ -473,10 +467,9 @@ async def import_transactions(file: UploadFile = File(...)):
                 return header.index(n)
         return None
 
-    c_code = find("Fr商品コード")
+    c_code = find("Fr商品コード", "商品コード")
     c_qty = find("個数")
     c_date = find("納品日")
-    c_temp = find("保管温度")
     c_maker = find("仕入メーカー", "請求先")
     c_pack = find("単位")
     c_order = find("発注日")
@@ -484,7 +477,7 @@ async def import_transactions(file: UploadFile = File(...)):
     c_name = find("品名")
     if c_code is None or c_qty is None:
         raise HTTPException(
-            400, "「Fr商品コード」または「個数」の列が見つかりませんでした"
+            400, "「Fr商品コード（商品コード）」または「個数」の列が見つかりませんでした"
         )
 
     def cell(row, idx):
@@ -503,10 +496,17 @@ async def import_transactions(file: UploadFile = File(...)):
     unknown = []
     seen: dict[str, int] = {}
     with get_conn() as conn:
-        mats = {
-            r["code"]: dict(r)
-            for r in conn.execute("SELECT id, code, active FROM materials")
-        }
+        mats_by_code = {}
+        mats_by_name = {}
+        for r in conn.execute(
+            "SELECT id, code, name, product_name, active FROM materials"
+        ):
+            m = dict(r)
+            mats_by_code[m["code"]] = m
+            for nm in (m["product_name"], m["name"], m["name"] + m["product_name"]):
+                k = _norm(nm)
+                if k:
+                    mats_by_name.setdefault(k, m)
         existing_keys = {
             r["import_key"]
             for r in conn.execute(
@@ -515,29 +515,34 @@ async def import_transactions(file: UploadFile = File(...)):
         }
         for row in rows[header_idx + 1:]:
             code = cell(row, c_code)
-            if not code:
-                continue
+            pname = cell(row, c_name)
             try:
                 qty = float(cell(row, c_qty))
             except ValueError:
                 qty = 0
-            if qty <= 0:
+            if qty <= 0 or (not code and not pname):
                 continue
-            mat = mats.get(code)
+            # コードで照合 → 見つからなければ品名で照合
+            mat = mats_by_code.get(code) if code else None
+            if mat is None and pname:
+                mat = mats_by_name.get(_norm(pname))
             if mat is None:
-                if code not in unknown:
-                    unknown.append(code)
+                label = code or pname
+                if label not in unknown:
+                    unknown.append(label)
                 continue
+            # カタログのままなら自動で在庫登録（保管場所は未割り当て）
             if not mat["active"]:
                 conn.execute(
-                    "UPDATE materials SET active = 1, location = ? WHERE id = ?",
-                    (_temp_to_location(cell(row, c_temp)), mat["id"]),
+                    "UPDATE materials SET active = 1, location = '未割り当て' "
+                    "WHERE id = ?",
+                    (mat["id"],),
                 )
                 mat["active"] = 1
                 auto_registered += 1
             base = _row_fingerprint([
                 code, cell(row, c_order), cell(row, c_date), cell(row, c_qty),
-                cell(row, c_other), cell(row, c_maker), cell(row, c_name),
+                cell(row, c_other), cell(row, c_maker), pname,
                 cell(row, c_pack),
             ])
             seen[base] = seen.get(base, 0) + 1
