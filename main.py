@@ -55,7 +55,7 @@ class MaterialIn(BaseModel):
     unit: str = Field(default="個", max_length=20)
     reorder_point: float = Field(default=0, ge=0)
     supplier: str = Field(default="", max_length=100)
-    location: Literal["倉庫", "未割り当て"] = "倉庫"
+    location: Literal["倉庫"] = "倉庫"
 
 
 class TransactionIn(BaseModel):
@@ -433,8 +433,8 @@ async def import_transactions(file: UploadFile = File(...)):
     """入庫記録の Excel(.xlsx) を読み込み、入庫履歴へ取り込む（原料用・包材用に対応）。
 
     商品コードで原料を特定し、見つからなければ品名で照合する。
-    個数を入庫数量として記録し、カタログのままの原料は自動で在庫登録する
-    （保管場所は「未割り当て」）。
+    すでに倉庫に在庫登録されている原料の行だけを取り込み、未登録の行はスキップする。
+    個数を入庫数量、納品日を入庫日として記録する。
     各行の指紋を import_key に保存し、再取り込み時の二重登録を防ぐ。
     """
     content = await file.read()
@@ -492,8 +492,7 @@ async def import_transactions(file: UploadFile = File(...)):
 
     imported = 0
     skipped_dup = 0
-    auto_registered = 0
-    unknown = []
+    skipped = 0
     seen: dict[str, int] = {}
     with get_conn() as conn:
         mats_by_code = {}
@@ -526,20 +525,10 @@ async def import_transactions(file: UploadFile = File(...)):
             mat = mats_by_code.get(code) if code else None
             if mat is None and pname:
                 mat = mats_by_name.get(_norm(pname))
-            if mat is None:
-                label = code or pname
-                if label not in unknown:
-                    unknown.append(label)
+            # 倉庫に登録済みの原料だけ取り込む。未登録・不明な行はそのままスキップ
+            if mat is None or not mat["active"]:
+                skipped += 1
                 continue
-            # カタログのままなら自動で在庫登録（保管場所は未割り当て）
-            if not mat["active"]:
-                conn.execute(
-                    "UPDATE materials SET active = 1, location = '未割り当て' "
-                    "WHERE id = ?",
-                    (mat["id"],),
-                )
-                mat["active"] = 1
-                auto_registered += 1
             base = _row_fingerprint([
                 code, cell(row, c_order), cell(row, c_date), cell(row, c_qty),
                 cell(row, c_other), cell(row, c_maker), pname,
@@ -564,8 +553,7 @@ async def import_transactions(file: UploadFile = File(...)):
     return {
         "imported": imported,
         "skipped_dup": skipped_dup,
-        "auto_registered": auto_registered,
-        "unknown": unknown,
+        "skipped": skipped,
     }
 
 
