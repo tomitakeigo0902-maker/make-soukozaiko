@@ -55,7 +55,7 @@ class MaterialIn(BaseModel):
     unit: str = Field(default="個", max_length=20)
     reorder_point: float = Field(default=0, ge=0)
     supplier: str = Field(default="", max_length=100)
-    location: Literal["倉庫", "冷蔵庫", "冷凍庫", "未割り当て"] = "倉庫"
+    location: Literal["倉庫", "未割り当て"] = "倉庫"
 
 
 class TransactionIn(BaseModel):
@@ -82,7 +82,7 @@ class BatchOutIn(BaseModel):
 
 
 class RegisterIn(BaseModel):
-    location: Literal["倉庫", "冷蔵庫", "冷凍庫"] = "倉庫"
+    location: Literal["倉庫"] = "倉庫"
     ids: list[int] = Field(default_factory=list)
 
 

@@ -286,8 +286,6 @@
             <label>保管場所</label>
             <select id="mat-location">
               <option value="倉庫">倉庫</option>
-              <option value="冷蔵庫">冷蔵庫</option>
-              <option value="冷凍庫">冷凍庫</option>
               <option value="未割り当て">未割り当て</option>
             </select>
           </div>
@@ -336,8 +334,6 @@
           <label>保管場所</label>
           <select id="reg-location">
             <option value="倉庫">倉庫</option>
-            <option value="冷蔵庫">冷蔵庫</option>
-            <option value="冷凍庫">冷凍庫</option>
           </select>
         </div>
         <div>
@@ -397,7 +393,7 @@
 <script>
 let materials = [];
 let catalog = [];
-const LOCATIONS = ['未割り当て', '倉庫', '冷蔵庫', '冷凍庫'];
+const LOCATIONS = ['未割り当て', '倉庫'];
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({
