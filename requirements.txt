@@ -1,5 +1,6 @@
 fastapi
 uvicorn
 openpyxl
+xlrd
 python-multipart
 pyinstaller

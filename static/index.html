@@ -187,7 +187,7 @@
     </div>
     <div class="card">
       <h2>入庫記録の Excel 取り込み</h2>
-      <p class="hint">入庫記録の Excel ファイル（.xlsx）を選ぶと、入庫履歴に取り込みます。
+      <p class="hint">入庫記録の Excel ファイル（.xlsx / .xls）を選ぶと、入庫履歴に取り込みます。
         原料用・包材用どちらの様式にも対応します。商品コード（見つからなければ品名）で
         原料・包材を判定し、「個数」を入庫数として「納品日」付けで記録します。
         すでに倉庫に登録されている原料の行だけを取り込みます（未登録の行はそのままスキップ。
@@ -196,7 +196,7 @@
       <div class="row">
         <div>
           <label>入庫記録の Excel ファイル</label>
-          <input type="file" id="inbound-file" accept=".xlsx">
+          <input type="file" id="inbound-file" accept=".xlsx,.xls">
         </div>
       </div>
       <button type="button" class="btn" onclick="importInbound()">取り込む</button>
@@ -307,7 +307,7 @@
     </div>
     <div class="card">
       <h2>Excel から一括取り込み（カタログ作成）</h2>
-      <p class="hint">原料一覧の Excel ファイル（.xlsx）を選ぶと、全商品を「カタログ」に取り込みます。
+      <p class="hint">原料一覧の Excel ファイル（.xlsx / .xls）を選ぶと、全商品を「カタログ」に取り込みます。
         見出し行（「ｺｰﾄﾞ」の列）を自動で探し、コード／一般名称／原材料名／仕入先を読み取ります
         （単位は「個」で登録。あとで原料ごとに変更可）。
         すでに同じコードがある原料は、一般名称・原材料名・仕入先を最新に更新します
@@ -316,7 +316,7 @@
       <div class="row">
         <div>
           <label>原料一覧の Excel ファイル</label>
-          <input type="file" id="import-file" accept=".xlsx">
+          <input type="file" id="import-file" accept=".xlsx,.xls">
         </div>
       </div>
       <button type="button" class="btn" onclick="importMaterials()">取り込む</button>

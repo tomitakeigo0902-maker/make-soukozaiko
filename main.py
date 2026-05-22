@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
 import openpyxl
+import xlrd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -134,6 +135,48 @@ def _parse_inbound_date(v) -> str:
 def _row_fingerprint(values) -> str:
     """入庫記録1行の指紋（再取り込み時の二重登録を防ぐ）。"""
     return hashlib.sha1("|".join(values).encode("utf-8")).hexdigest()[:16]
+
+
+def _read_xlsx(content: bytes):
+    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    try:
+        return [list(r) for r in wb.active.iter_rows(values_only=True)]
+    finally:
+        wb.close()
+
+
+def _read_xls(content: bytes):
+    book = xlrd.open_workbook(file_contents=content)
+    sheet = book.sheet_by_index(0)
+    rows = []
+    for r in range(sheet.nrows):
+        row = []
+        for c in range(sheet.ncols):
+            cell = sheet.cell(r, c)
+            if cell.ctype == xlrd.XL_CELL_DATE:
+                try:
+                    row.append(xlrd.xldate_as_datetime(cell.value, book.datemode))
+                except Exception:
+                    row.append(cell.value)
+            else:
+                row.append(cell.value)
+        rows.append(row)
+    return rows
+
+
+def _read_workbook(filename: str, content: bytes):
+    """アップロードされた Excel(.xlsx / .xls) を行のリストとして読み込む。"""
+    is_xls = (filename or "").lower().endswith(".xls")
+    readers = [_read_xls, _read_xlsx] if is_xls else [_read_xlsx, _read_xls]
+    for reader in readers:
+        try:
+            return reader(content)
+        except Exception:
+            continue
+    raise HTTPException(
+        400,
+        "Excel ファイルとして読み込めませんでした。.xlsx または .xls 形式か確認してください",
+    )
 
 
 # --- 原料マスター API ---------------------------------------------------------
@@ -348,23 +391,14 @@ def create_batch_out(batch: BatchOutIn):
 
 @app.post("/api/import/materials")
 async def import_materials(file: UploadFile = File(...)):
-    """原料一覧の Excel(.xlsx) を読み込み、カタログへ取り込む。
+    """原料一覧の Excel(.xlsx / .xls) を読み込み、カタログへ取り込む。
 
     見出し行（「ｺｰﾄﾞ」を含む行）を自動で探し、必要な列だけ取り込む。
     新規コードはカタログ（active=0）として追加し、既存コードは
     一般名称・原材料名・単位・仕入先のみ更新する（保管場所・発注点・登録状態は維持）。
     """
     content = await file.read()
-    try:
-        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    except Exception:
-        raise HTTPException(
-            400, "Excel ファイルとして読み込めませんでした。.xlsx 形式か確認してください"
-        )
-    try:
-        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
-    finally:
-        wb.close()
+    rows = _read_workbook(file.filename, content)
 
     header = []
     header_idx = None
@@ -430,7 +464,7 @@ async def import_materials(file: UploadFile = File(...)):
 
 @app.post("/api/import/transactions")
 async def import_transactions(file: UploadFile = File(...)):
-    """入庫記録の Excel(.xlsx) を読み込み、入庫履歴へ取り込む（原料用・包材用に対応）。
+    """入庫記録の Excel(.xlsx / .xls) を読み込み、入庫履歴へ取り込む（原料用・包材用に対応）。
 
     商品コードで原料を特定し、見つからなければ品名で照合する。
     すでに倉庫に在庫登録されている原料の行だけを取り込み、未登録の行はスキップする。
@@ -438,16 +472,7 @@ async def import_transactions(file: UploadFile = File(...)):
     各行の指紋を import_key に保存し、再取り込み時の二重登録を防ぐ。
     """
     content = await file.read()
-    try:
-        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    except Exception:
-        raise HTTPException(
-            400, "Excel ファイルとして読み込めませんでした。.xlsx 形式か確認してください"
-        )
-    try:
-        rows = [list(r) for r in wb.active.iter_rows(values_only=True)]
-    finally:
-        wb.close()
+    rows = _read_workbook(file.filename, content)
 
     header = []
     header_idx = None
