@@ -53,6 +53,7 @@ class MaterialIn(BaseModel):
     code: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=100)
     product_name: str = Field(default="", max_length=100)
+    pack_size: str = Field(default="", max_length=50)
     unit: str = Field(default="個", max_length=20)
     reorder_point: float = Field(default=0, ge=0)
     supplier: str = Field(default="", max_length=100)
@@ -90,8 +91,12 @@ class RegisterIn(BaseModel):
 # --- 在庫計算ヘルパー ---------------------------------------------------------
 
 def _stock(conn: sqlite3.Connection, material_id: int) -> float:
+    """現在庫。入庫は納品日が今日以前のものだけを数える（未来＝入荷予定は除外）。"""
     row = conn.execute(
-        "SELECT COALESCE(SUM(CASE type WHEN 'in' THEN quantity ELSE -quantity END), 0) AS s "
+        "SELECT COALESCE(SUM(CASE "
+        "WHEN type = 'in' AND date(created_at) <= date('now', 'localtime') "
+        "THEN quantity "
+        "WHEN type = 'out' THEN -quantity ELSE 0 END), 0) AS s "
         "FROM transactions WHERE material_id = ?",
         (material_id,),
     ).fetchone()
@@ -187,17 +192,32 @@ def list_materials():
         rows = conn.execute(
             """
             SELECT m.*,
-                   COALESCE((SELECT SUM(CASE type WHEN 'in' THEN quantity ELSE -quantity END)
-                             FROM transactions t WHERE t.material_id = m.id), 0) AS stock
+                   COALESCE((SELECT SUM(CASE
+                       WHEN type = 'in'
+                            AND date(created_at) <= date('now', 'localtime')
+                            THEN quantity
+                       WHEN type = 'out' THEN -quantity ELSE 0 END)
+                     FROM transactions t WHERE t.material_id = m.id), 0) AS stock
             FROM materials m
             WHERE m.active = 1
             ORDER BY m.code
             """
         ).fetchall()
+        plans = conn.execute(
+            "SELECT material_id, date(created_at) AS d, quantity FROM transactions "
+            "WHERE type = 'in' AND date(created_at) > date('now', 'localtime') "
+            "ORDER BY created_at"
+        ).fetchall()
+    incoming = {}
+    for p in plans:
+        incoming.setdefault(p["material_id"], []).append(
+            {"date": p["d"], "quantity": p["quantity"]}
+        )
     result = []
     for r in rows:
         d = dict(r)
         d["low"] = d["reorder_point"] > 0 and d["stock"] <= d["reorder_point"]
+        d["incoming"] = incoming.get(d["id"], [])
         result.append(d)
     return result
 
@@ -207,7 +227,7 @@ def list_catalog():
     """取り込み済みだが、まだ在庫登録されていない原料（カタログ）の一覧。"""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, code, name, product_name, unit FROM materials "
+            "SELECT id, code, name, product_name, pack_size, unit FROM materials "
             "WHERE active = 0 ORDER BY code"
         ).fetchall()
     return [dict(r) for r in rows]
@@ -245,10 +265,11 @@ def create_material(m: MaterialIn):
         try:
             cur = conn.execute(
                 "INSERT INTO materials "
-                "(code, name, product_name, unit, reorder_point, supplier, location) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (m.code, m.name, m.product_name, m.unit, m.reorder_point,
-                 m.supplier, m.location),
+                "(code, name, product_name, pack_size, unit, reorder_point, "
+                "supplier, location) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (m.code, m.name, m.product_name, m.pack_size, m.unit,
+                 m.reorder_point, m.supplier, m.location),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, f"原料コード「{m.code}」はすでに登録されています")
@@ -262,10 +283,11 @@ def update_material(material_id: int, m: MaterialIn):
             raise HTTPException(404, "原料が見つかりません")
         try:
             conn.execute(
-                "UPDATE materials SET code = ?, name = ?, product_name = ?, unit = ?, "
-                "reorder_point = ?, supplier = ?, location = ? WHERE id = ?",
-                (m.code, m.name, m.product_name, m.unit, m.reorder_point,
-                 m.supplier, m.location, material_id),
+                "UPDATE materials SET code = ?, name = ?, product_name = ?, "
+                "pack_size = ?, unit = ?, reorder_point = ?, supplier = ?, "
+                "location = ? WHERE id = ?",
+                (m.code, m.name, m.product_name, m.pack_size, m.unit,
+                 m.reorder_point, m.supplier, m.location, material_id),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, f"原料コード「{m.code}」はすでに登録されています")
@@ -395,7 +417,7 @@ async def import_materials(file: UploadFile = File(...)):
 
     見出し行（「ｺｰﾄﾞ」を含む行）を自動で探し、必要な列だけ取り込む。
     新規コードはカタログ（active=0）として追加し、既存コードは
-    一般名称・原材料名・単位・仕入先のみ更新する（保管場所・発注点・登録状態は維持）。
+    一般名称・原材料名・入数・仕入先のみ更新する（保管場所・発注点・登録状態は維持）。
     """
     content = await file.read()
     rows = _read_workbook(file.filename, content)
@@ -419,6 +441,7 @@ async def import_materials(file: UploadFile = File(...)):
     c_code = find("ｺｰﾄﾞ", "コード")
     c_name = find("一般名称")
     c_product = find("原材料名")
+    c_pack = find("入数", "入り数")
     c_supplier = find("購入元1", "購入元")
     if c_code is None:
         raise HTTPException(400, "「ｺｰﾄﾞ」の列が見つかりませんでした")
@@ -438,24 +461,24 @@ async def import_materials(file: UploadFile = File(...)):
                 continue
             name = cell(row, c_name)
             product = cell(row, c_product)
-            unit = "個"
+            pack = cell(row, c_pack)
             supplier = cell(row, c_supplier)
             if code in existing:
                 # 既存はExcel由来の項目だけ更新（保管場所・発注点・登録状態は維持）
                 conn.execute(
-                    "UPDATE materials SET name = ?, product_name = ?, unit = ?, "
+                    "UPDATE materials SET name = ?, product_name = ?, pack_size = ?, "
                     "supplier = ? WHERE code = ?",
-                    (name, product, unit, supplier, code),
+                    (name, product, pack, supplier, code),
                 )
                 updated += 1
             else:
                 # 新規はカタログとして取り込む（active=0、在庫登録は別途）
                 conn.execute(
                     "INSERT INTO materials "
-                    "(code, name, product_name, unit, reorder_point, supplier, "
-                    "location, active) "
-                    "VALUES (?, ?, ?, ?, 0, ?, '倉庫', 0)",
-                    (code, name, product, unit, supplier),
+                    "(code, name, product_name, pack_size, unit, reorder_point, "
+                    "supplier, location, active) "
+                    "VALUES (?, ?, ?, ?, '個', 0, ?, '倉庫', 0)",
+                    (code, name, product, pack, supplier),
                 )
                 existing.add(code)
                 imported += 1
@@ -468,7 +491,8 @@ async def import_transactions(file: UploadFile = File(...)):
 
     商品コードで原料を特定し、見つからなければ品名で照合する。
     すでに倉庫に在庫登録されている原料の行だけを取り込み、未登録の行はスキップする。
-    個数を入庫数量、納品日を入庫日として記録する。
+    個数を入庫数量、納品日を入庫日として記録する。納品日が未来の行は
+    入荷予定として記録され、現在庫には加算されない（納品日が来れば自動で加算）。
     各行の指紋を import_key に保存し、再取り込み時の二重登録を防ぐ。
     """
     content = await file.read()
@@ -516,8 +540,10 @@ async def import_transactions(file: UploadFile = File(...)):
         return row[idx]
 
     imported = 0
+    planned = 0
     skipped_dup = 0
     skipped = 0
+    today = datetime.date.today().strftime("%Y-%m-%d")
     seen: dict[str, int] = {}
     with get_conn() as conn:
         mats_by_code = {}
@@ -567,16 +593,22 @@ async def import_transactions(file: UploadFile = File(...)):
             note = " ".join(
                 p for p in [cell(row, c_maker), cell(row, c_pack)] if p
             )
+            date_str = _parse_inbound_date(raw(row, c_date))
             conn.execute(
                 "INSERT INTO transactions "
                 "(material_id, type, quantity, line, note, import_key, created_at) "
                 "VALUES (?, 'in', ?, '', ?, ?, ?)",
-                (mat["id"], qty, note, key, _parse_inbound_date(raw(row, c_date))),
+                (mat["id"], qty, note, key, date_str),
             )
             existing_keys.add(key)
-            imported += 1
+            # 納品日が未来なら入荷予定（現在庫には加算されない）
+            if date_str > today:
+                planned += 1
+            else:
+                imported += 1
     return {
         "imported": imported,
+        "planned": planned,
         "skipped_dup": skipped_dup,
         "skipped": skipped,
     }

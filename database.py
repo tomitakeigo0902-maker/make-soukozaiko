@@ -44,6 +44,7 @@ def init_db() -> None:
                 code          TEXT NOT NULL UNIQUE,
                 name          TEXT NOT NULL,
                 product_name  TEXT NOT NULL DEFAULT '',
+                pack_size     TEXT NOT NULL DEFAULT '',
                 unit          TEXT NOT NULL DEFAULT 'kg',
                 reorder_point REAL NOT NULL DEFAULT 0,
                 supplier      TEXT NOT NULL DEFAULT '',
@@ -80,6 +81,10 @@ def init_db() -> None:
         if "active" not in cols:
             conn.execute(
                 "ALTER TABLE materials ADD COLUMN active INTEGER NOT NULL DEFAULT 1"
+            )
+        if "pack_size" not in cols:
+            conn.execute(
+                "ALTER TABLE materials ADD COLUMN pack_size TEXT NOT NULL DEFAULT ''"
             )
         tx_cols = [r["name"] for r in conn.execute("PRAGMA table_info(transactions)")]
         if "import_key" not in tx_cols:
