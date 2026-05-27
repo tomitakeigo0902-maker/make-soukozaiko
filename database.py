@@ -66,6 +66,27 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_tx_material ON transactions(material_id);
             CREATE INDEX IF NOT EXISTS idx_tx_created  ON transactions(created_at);
+
+            CREATE TABLE IF NOT EXISTS locations (
+                id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE
+            );
+            INSERT OR IGNORE INTO locations(name) VALUES ('倉庫');
+
+            CREATE TABLE IF NOT EXISTS outbound_lines (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+            );
+
+            CREATE TABLE IF NOT EXISTS outbound_line_items (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                line_id     INTEGER NOT NULL REFERENCES outbound_lines(id) ON DELETE CASCADE,
+                material_id INTEGER NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+                position    INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(line_id, material_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_oli_line ON outbound_line_items(line_id);
             """
         )
         # 旧バージョンの DB に無い列を追加（移行）
@@ -90,4 +111,11 @@ def init_db() -> None:
         if "import_key" not in tx_cols:
             conn.execute(
                 "ALTER TABLE transactions ADD COLUMN import_key TEXT NOT NULL DEFAULT ''"
+            )
+        # 既存の materials.location を locations テーブルにも反映する
+        for r in conn.execute(
+            "SELECT DISTINCT location FROM materials WHERE location != ''"
+        ):
+            conn.execute(
+                "INSERT OR IGNORE INTO locations(name) VALUES (?)", (r["location"],)
             )

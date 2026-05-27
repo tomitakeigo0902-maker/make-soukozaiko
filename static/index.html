@@ -124,6 +124,30 @@
   .catalog-row:hover { background: #f8fbff; }
   .catalog-row input { width: auto; margin: 0; }
   .catalog-empty { padding: 18px; text-align: center; color: #888; font-size: 13px; }
+  ul.line-items {
+    list-style: none; padding: 0; margin: 8px 0 12px;
+  }
+  ul.line-items li {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px; margin-bottom: 4px;
+    background: #fafafa; border: 1px solid #e0e0e0; border-radius: 5px;
+    cursor: grab; user-select: none;
+  }
+  ul.line-items li:hover { background: #f3f6fa; }
+  ul.line-items li.dragging { opacity: 0.4; cursor: grabbing; }
+  ul.line-items .drag-handle {
+    color: #9aa; font-size: 16px; line-height: 1; letter-spacing: -1px;
+  }
+  ul.line-items .item-label { flex: 1; }
+  ul.line-items li.inactive { background: #fff5f5; }
+  ul.line-items li.inactive .badge {
+    color: #c62828; font-size: 11px; margin-left: 6px;
+  }
+  .line-items-empty {
+    padding: 14px; text-align: center; color: #999; font-size: 13px;
+    border: 1px dashed #ccc; border-radius: 5px; margin: 8px 0 12px;
+  }
+  .line-card h3 { margin: 0; font-size: 15px; color: #1f4e79; }
 </style>
 </head>
 <body>
@@ -132,6 +156,7 @@
   <button data-tab="stock" class="active">在庫一覧</button>
   <button data-tab="register">入出庫登録</button>
   <button data-tab="batch">一括出庫</button>
+  <button data-tab="lines">出庫先ライン</button>
   <button data-tab="history">履歴</button>
   <button data-tab="master">原料マスター</button>
 </nav>
@@ -143,7 +168,10 @@
     <div class="card">
       <div class="toolbar">
         <h2>原料の現在庫</h2>
-        <button class="mini" onclick="loadMaterials()">再読み込み</button>
+        <div>
+          <button class="mini" onclick="addLocation()">＋ 保管場所を追加</button>
+          <button class="mini" onclick="loadMaterials()">再読み込み</button>
+        </div>
       </div>
       <table>
         <thead><tr>
@@ -177,7 +205,7 @@
           </div>
           <div id="tx-line-wrap">
             <label>払出ライン（出庫先）</label>
-            <input type="text" id="tx-line" placeholder="例: 第1ライン">
+            <input type="text" id="tx-line" list="line-suggest" placeholder="例: 第1ライン">
           </div>
         </div>
         <label>備考</label>
@@ -210,11 +238,15 @@
   <section id="batch">
     <div class="card">
       <h2>一括出庫（出庫依頼表の入力）</h2>
-      <p class="hint">紙の出庫依頼表を見ながら、複数の原料をまとめて出庫登録できます。</p>
+      <p class="hint">紙の出庫依頼表を見ながら、複数の原料をまとめて出庫登録できます。
+        出庫先ラインを選ぶと、そのラインに登録された品目が明細に読み込まれます
+        （ラインの登録は「出庫先ライン」タブから）。</p>
       <div class="row">
         <div>
           <label>出庫先ライン</label>
-          <input type="text" id="batch-line" placeholder="例: 第1ライン">
+          <select id="batch-line" onchange="onBatchLineChange()">
+            <option value="">― ラインを選択 ―</option>
+          </select>
         </div>
         <div>
           <label>備考</label>
@@ -239,6 +271,27 @@
         <button type="button" class="btn gray" onclick="resetBatch()">明細をクリア</button>
       </div>
     </div>
+  </section>
+
+  <!-- 出庫先ライン -->
+  <section id="lines">
+    <div class="card">
+      <h2>出庫先ラインを追加</h2>
+      <p class="hint">出庫先のラインを登録できます。それぞれのラインに、よく出庫する品目を覚えさせておくと、
+        一括出庫タブでライン名を選んだだけで明細が読み込まれます（数量は0のままなので入力してください）。
+        品目はドラッグで上下に並び替えられます。</p>
+      <div class="row">
+        <div style="flex:1">
+          <label>ライン名</label>
+          <input type="text" id="line-new-name" placeholder="例: 第1ライン">
+        </div>
+        <div style="flex:0 0 auto; align-self:flex-end">
+          <button type="button" class="btn" onclick="createOutboundLine()"
+            style="margin-top:0">追加</button>
+        </div>
+      </div>
+    </div>
+    <div id="lines-list"></div>
   </section>
 
   <!-- 履歴 -->
@@ -288,9 +341,7 @@
         <div class="row">
           <div>
             <label>保管場所</label>
-            <select id="mat-location">
-              <option value="倉庫">倉庫</option>
-            </select>
+            <select id="mat-location"></select>
           </div>
           <div>
             <label>単位</label>
@@ -313,15 +364,15 @@
     </div>
     <div class="card">
       <h2>Excel から一括取り込み（カタログ作成）</h2>
-      <p class="hint">原料一覧の Excel ファイル（.xlsx / .xls）を選ぶと、全商品を「カタログ」に取り込みます。
-        見出し行（「ｺｰﾄﾞ」の列）を自動で探し、コード／一般名称／原材料名／仕入先を読み取ります
-        （単位は「個」で登録。あとで原料ごとに変更可）。
-        すでに同じコードがある原料は、一般名称・原材料名・仕入先を最新に更新します
+      <p class="hint">原材料データベースのエクセルファイル（.xlsx / .xls）を読み込むと、
+        全商品を「カタログ」に取り込みます。見出し行から
+        コード／一般名称／原材料名／入数／仕入先 を自動で読み取り、
+        すでに同じコードがある原料は最新内容に更新します
         （保管場所・発注点・登録状態は維持）。
         実際に在庫する原料は、下の「一覧から原料を登録」で選んでください。</p>
       <div class="row">
         <div>
-          <label>原料一覧の Excel ファイル</label>
+          <label>原材料データベースのエクセルファイル</label>
           <input type="file" id="import-file" accept=".xlsx,.xls">
         </div>
       </div>
@@ -335,9 +386,7 @@
       <div class="row">
         <div>
           <label>保管場所</label>
-          <select id="reg-location">
-            <option value="倉庫">倉庫</option>
-          </select>
+          <select id="reg-location"></select>
         </div>
         <div>
           <label>カタログを検索</label>
@@ -381,7 +430,7 @@
       <label>数量</label>
       <input type="number" id="edit-qty" step="any" min="0" required>
       <label>払出ライン</label>
-      <input type="text" id="edit-line">
+      <input type="text" id="edit-line" list="line-suggest">
       <label>備考</label>
       <textarea id="edit-note"></textarea>
       <div class="modal-actions">
@@ -392,12 +441,15 @@
   </div>
 </div>
 
+<datalist id="line-suggest"></datalist>
+
 <div class="toast" id="toast"></div>
 
 <script>
 let materials = [];
 let catalog = [];
-const LOCATIONS = ['倉庫'];
+let LOCATIONS = ['倉庫'];
+let outboundLines = [];
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({
@@ -442,9 +494,43 @@ document.querySelectorAll('nav button').forEach(btn => {
     document.getElementById(btn.dataset.tab).classList.add('active');
     if (btn.dataset.tab === 'history') loadTransactions();
     if (btn.dataset.tab === 'batch') enterBatchTab();
+    if (btn.dataset.tab === 'lines') loadOutboundLines();
     if (btn.dataset.tab === 'master') loadCatalog();
   };
 });
+
+// --- 保管場所 ---
+async function loadLocations() {
+  try {
+    const locs = await api('GET', '/api/locations');
+    LOCATIONS = locs.map(l => l.name);
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  fillLocationSelects();
+}
+
+function fillLocationSelects() {
+  for (const id of ['mat-location', 'reg-location']) {
+    const sel = document.getElementById(id);
+    if (!sel) continue;
+    const cur = sel.value;
+    sel.innerHTML = LOCATIONS.map(l =>
+      '<option value="' + esc(l) + '">' + esc(l) + '</option>').join('');
+    if (LOCATIONS.includes(cur)) sel.value = cur;
+  }
+}
+
+async function addLocation() {
+  const name = (prompt('追加する保管場所の名前を入力してください') || '').trim();
+  if (!name) return;
+  try {
+    await api('POST', '/api/locations', { name });
+  } catch (e) { toast(e.message, true); return; }
+  await loadLocations();
+  toast('保管場所「' + name + '」を追加しました');
+}
 
 // --- 原料マスターの読み込み・描画 ---
 async function loadMaterials() {
@@ -1021,9 +1107,218 @@ async function submitBatch() {
   }
 }
 
+// --- 出庫先ライン ---
+async function loadOutboundLines() {
+  try {
+    outboundLines = await api('GET', '/api/outbound-lines');
+  } catch (e) { toast(e.message, true); return; }
+  renderOutboundLines();
+  fillBatchLineSelect();
+  fillLineSuggest();
+}
+
+function fillBatchLineSelect() {
+  const sel = document.getElementById('batch-line');
+  if (!sel) return;
+  const cur = sel.value;
+  let html = '<option value="">― ラインを選択 ―</option>';
+  for (const ln of outboundLines) {
+    html += '<option value="' + esc(ln.name) + '">' + esc(ln.name)
+      + (ln.items.length ? '（' + ln.items.length + '品目）' : '') + '</option>';
+  }
+  sel.innerHTML = html;
+  if (outboundLines.some(x => x.name === cur)) sel.value = cur;
+}
+
+function fillLineSuggest() {
+  const dl = document.getElementById('line-suggest');
+  if (!dl) return;
+  dl.innerHTML = outboundLines.map(ln =>
+    '<option value="' + esc(ln.name) + '"></option>').join('');
+}
+
+async function createOutboundLine() {
+  const input = document.getElementById('line-new-name');
+  const name = input.value.trim();
+  if (!name) { toast('ライン名を入力してください', true); return; }
+  try {
+    await api('POST', '/api/outbound-lines', { name });
+  } catch (e) { toast(e.message, true); return; }
+  input.value = '';
+  await loadOutboundLines();
+  toast('「' + name + '」を追加しました');
+}
+
+async function deleteOutboundLine(id) {
+  const ln = outboundLines.find(x => x.id === id);
+  if (!ln) return;
+  if (!confirm('「' + ln.name + '」を削除します。よろしいですか？')) return;
+  try { await api('DELETE', '/api/outbound-lines/' + id); }
+  catch (e) { toast(e.message, true); return; }
+  await loadOutboundLines();
+  toast('削除しました');
+}
+
+async function renameOutboundLine(id) {
+  const ln = outboundLines.find(x => x.id === id);
+  if (!ln) return;
+  const newName = (prompt('新しいライン名', ln.name) || '').trim();
+  if (!newName || newName === ln.name) return;
+  try {
+    await api('PUT', '/api/outbound-lines/' + id, {
+      name: newName, items: ln.items.map(it => it.material_id),
+    });
+  } catch (e) { toast(e.message, true); return; }
+  await loadOutboundLines();
+}
+
+async function onAddLineItem(lineId) {
+  const sel = document.querySelector('select.line-add[data-line="' + lineId + '"]');
+  const mid = parseInt(sel.value, 10);
+  if (!mid) return;
+  const ln = outboundLines.find(x => x.id === lineId);
+  if (!ln) return;
+  if (ln.items.some(it => it.material_id === mid)) {
+    toast('すでに追加されています', true); return;
+  }
+  const items = ln.items.map(it => it.material_id).concat([mid]);
+  try {
+    await api('PUT', '/api/outbound-lines/' + lineId, { name: ln.name, items });
+  } catch (e) { toast(e.message, true); return; }
+  sel.value = '';
+  await loadOutboundLines();
+}
+
+async function removeLineItem(lineId, materialId) {
+  const ln = outboundLines.find(x => x.id === lineId);
+  if (!ln) return;
+  const items = ln.items.map(it => it.material_id).filter(x => x !== materialId);
+  try {
+    await api('PUT', '/api/outbound-lines/' + lineId, { name: ln.name, items });
+  } catch (e) { toast(e.message, true); return; }
+  await loadOutboundLines();
+}
+
+async function saveLineOrder(lineId, items) {
+  const ln = outboundLines.find(x => x.id === lineId);
+  if (!ln) return;
+  // 並びが変わってなければ送信しない
+  const cur = ln.items.map(it => it.material_id);
+  if (cur.length === items.length && cur.every((v, i) => v === items[i])) return;
+  try {
+    await api('PUT', '/api/outbound-lines/' + lineId, { name: ln.name, items });
+  } catch (e) { toast(e.message, true); await loadOutboundLines(); return; }
+  ln.items = items.map(mid => ln.items.find(it => it.material_id === mid));
+}
+
+function itemLabelFromLineItem(it) {
+  const n = (it.name || '') + (it.product_name ? ' ' + it.product_name : '');
+  return it.code + ' / ' + (n.trim() || '(名称未設定)')
+    + (it.pack_size ? '（' + it.pack_size + '）' : '');
+}
+
+function renderOutboundLines() {
+  const wrap = document.getElementById('lines-list');
+  if (!outboundLines.length) {
+    wrap.innerHTML = '<div class="card empty">'
+      + '出庫先ラインがまだ登録されていません。上の入力欄から追加してください。</div>';
+    return;
+  }
+  let html = '';
+  for (const ln of outboundLines) {
+    const opts = '<option value="">― 品目を選んで追加 ―</option>' + materialOptionGroups();
+    html += '<div class="card line-card">'
+      + '<div class="toolbar">'
+      + '<h3>' + esc(ln.name)
+      + ' <span class="hint" style="font-weight:normal">（' + ln.items.length + '品目）</span></h3>'
+      + '<div>'
+      + '<button class="mini" onclick="renameOutboundLine(' + ln.id + ')">名前変更</button>'
+      + '<button class="mini danger" onclick="deleteOutboundLine(' + ln.id + ')">削除</button>'
+      + '</div></div>';
+    if (ln.items.length) {
+      html += '<ul class="line-items" data-line="' + ln.id + '">';
+      for (const it of ln.items) {
+        const cls = it.active ? '' : ' inactive';
+        const badge = it.active ? '' : '<span class="badge">在庫未登録</span>';
+        html += '<li draggable="true" data-mat="' + it.material_id + '" class="' + cls + '">'
+          + '<span class="drag-handle" title="ドラッグで並び替え">⋮⋮</span>'
+          + '<span class="item-label">' + esc(itemLabelFromLineItem(it)) + badge + '</span>'
+          + '<button class="mini danger" onclick="removeLineItem(' + ln.id + ',' + it.material_id + ')">×</button>'
+          + '</li>';
+      }
+      html += '</ul>';
+    } else {
+      html += '<div class="line-items-empty">まだ品目がありません。下から追加してください。</div>';
+    }
+    html += '<div class="row" style="align-items:flex-end; margin-top:4px">'
+      + '<div style="flex:1"><select class="line-add" data-line="' + ln.id + '">' + opts + '</select></div>'
+      + '<div style="flex:0 0 auto">'
+      + '<button class="mini" onclick="onAddLineItem(' + ln.id + ')" '
+      + 'style="padding:8px 14px; font-size:13px">＋ 追加</button>'
+      + '</div></div></div>';
+  }
+  wrap.innerHTML = html;
+  document.querySelectorAll('ul.line-items').forEach(ul => attachDragDrop(ul));
+}
+
+// --- ドラッグ＆ドロップで品目を並び替え ---
+let dragSrc = null;
+
+function attachDragDrop(ul) {
+  ul.querySelectorAll('li').forEach(li => {
+    li.addEventListener('dragstart', e => {
+      dragSrc = li;
+      li.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', li.dataset.mat); } catch (_) {}
+    });
+    li.addEventListener('dragend', () => {
+      if (!dragSrc) return;
+      dragSrc.classList.remove('dragging');
+      const lineId = parseInt(ul.dataset.line, 10);
+      const items = [...ul.querySelectorAll('li')].map(x => parseInt(x.dataset.mat, 10));
+      dragSrc = null;
+      saveLineOrder(lineId, items);
+    });
+    li.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (!dragSrc || dragSrc === li || dragSrc.parentElement !== ul) return;
+      const rect = li.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      ul.insertBefore(dragSrc, before ? li : li.nextSibling);
+    });
+    li.addEventListener('drop', e => { e.preventDefault(); });
+  });
+}
+
+// --- 一括出庫のテンプレート読み込み ---
+function onBatchLineChange() {
+  const sel = document.getElementById('batch-line');
+  const name = sel.value;
+  if (!name) return;
+  const ln = outboundLines.find(x => x.name === name);
+  if (!ln || !ln.items.length) return;
+  const body = document.getElementById('batch-body');
+  const hasData = [...body.querySelectorAll('tr')].some(tr =>
+    tr.querySelector('.b-mat').value || tr.querySelector('.b-qty').value);
+  if (hasData && !confirm('「' + name + '」の品目を明細に読み込みます。'
+      + '現在の明細は置き換えられます。よろしいですか？')) return;
+  body.innerHTML = '';
+  for (const it of ln.items) {
+    if (!it.active) continue;
+    addBatchRow(it.material_id);
+  }
+  ensureBatchRows();
+}
+
 // --- 起動 ---
 syncLineVisibility();
-loadMaterials();
+(async () => {
+  await loadLocations();
+  await loadMaterials();
+  await loadOutboundLines();
+})();
 </script>
 </body>
 </html>

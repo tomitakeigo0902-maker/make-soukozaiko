@@ -57,7 +57,7 @@ class MaterialIn(BaseModel):
     unit: str = Field(default="個", max_length=20)
     reorder_point: float = Field(default=0, ge=0)
     supplier: str = Field(default="", max_length=100)
-    location: Literal["倉庫"] = "倉庫"
+    location: str = Field(default="倉庫", max_length=50)
 
 
 class TransactionIn(BaseModel):
@@ -84,8 +84,31 @@ class BatchOutIn(BaseModel):
 
 
 class RegisterIn(BaseModel):
-    location: Literal["倉庫"] = "倉庫"
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    location: str = Field(default="倉庫", max_length=50)
     ids: list[int] = Field(default_factory=list)
+
+
+class LocationIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=50)
+
+
+class OutboundLineIn(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=100)
+
+
+class OutboundLineUpdate(BaseModel):
+    """出庫先ラインの名前と品目（material_id の並び）をまとめて更新する。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=100)
+    items: list[int] = Field(default_factory=list)
 
 
 # --- 在庫計算ヘルパー ---------------------------------------------------------
@@ -300,6 +323,142 @@ def delete_material(material_id: int):
         cur = conn.execute("DELETE FROM materials WHERE id = ?", (material_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "原料が見つかりません")
+    return {"ok": True}
+
+
+# --- 保管場所 API -------------------------------------------------------------
+
+@app.get("/api/locations")
+def list_locations():
+    with get_conn() as conn:
+        return [
+            dict(r)
+            for r in conn.execute("SELECT id, name FROM locations ORDER BY id")
+        ]
+
+
+@app.post("/api/locations", status_code=201)
+def create_location(loc: LocationIn):
+    with get_conn() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO locations(name) VALUES (?)", (loc.name,)
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(400, f"「{loc.name}」はすでに登録されています")
+        return {"id": cur.lastrowid, "name": loc.name}
+
+
+@app.delete("/api/locations/{loc_id}")
+def delete_location(loc_id: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT name FROM locations WHERE id = ?", (loc_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "保管場所が見つかりません")
+        used = conn.execute(
+            "SELECT 1 FROM materials WHERE active = 1 AND location = ? LIMIT 1",
+            (row["name"],),
+        ).fetchone()
+        if used:
+            raise HTTPException(
+                400, f"「{row['name']}」を使っている原料があるため削除できません"
+            )
+        conn.execute("DELETE FROM locations WHERE id = ?", (loc_id,))
+    return {"ok": True}
+
+
+# --- 出庫先ライン API ---------------------------------------------------------
+
+@app.get("/api/outbound-lines")
+def list_outbound_lines():
+    """登録された出庫先ラインと、その品目（並び順）を返す。"""
+    with get_conn() as conn:
+        lines = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT id, name FROM outbound_lines ORDER BY id"
+            )
+        ]
+        items = conn.execute(
+            "SELECT oli.line_id, oli.material_id, oli.position, "
+            "m.code, m.name, m.product_name, m.pack_size, m.unit, m.active "
+            "FROM outbound_line_items oli "
+            "JOIN materials m ON m.id = oli.material_id "
+            "ORDER BY oli.line_id, oli.position, oli.id"
+        ).fetchall()
+        by_line: dict[int, list] = {}
+        for it in items:
+            by_line.setdefault(it["line_id"], []).append({
+                "material_id": it["material_id"],
+                "code": it["code"],
+                "name": it["name"],
+                "product_name": it["product_name"],
+                "pack_size": it["pack_size"],
+                "unit": it["unit"],
+                "active": bool(it["active"]),
+            })
+        for ln in lines:
+            ln["items"] = by_line.get(ln["id"], [])
+        return lines
+
+
+@app.post("/api/outbound-lines", status_code=201)
+def create_outbound_line(ln: OutboundLineIn):
+    with get_conn() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO outbound_lines(name) VALUES (?)", (ln.name,)
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(400, f"「{ln.name}」はすでに登録されています")
+        return {"id": cur.lastrowid, "name": ln.name, "items": []}
+
+
+@app.put("/api/outbound-lines/{line_id}")
+def update_outbound_line(line_id: int, ln: OutboundLineUpdate):
+    """ライン名と品目の並びをまとめて差し替える。"""
+    with get_conn() as conn:
+        if conn.execute(
+            "SELECT 1 FROM outbound_lines WHERE id = ?", (line_id,)
+        ).fetchone() is None:
+            raise HTTPException(404, "出庫先ラインが見つかりません")
+        try:
+            conn.execute(
+                "UPDATE outbound_lines SET name = ? WHERE id = ?",
+                (ln.name, line_id),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(400, f"「{ln.name}」はすでに登録されています")
+        conn.execute(
+            "DELETE FROM outbound_line_items WHERE line_id = ?", (line_id,)
+        )
+        seen: set[int] = set()
+        for pos, mid in enumerate(ln.items):
+            if mid in seen:
+                continue
+            seen.add(mid)
+            if conn.execute(
+                "SELECT 1 FROM materials WHERE id = ?", (mid,)
+            ).fetchone() is None:
+                continue
+            conn.execute(
+                "INSERT INTO outbound_line_items(line_id, material_id, position) "
+                "VALUES (?, ?, ?)",
+                (line_id, mid, pos),
+            )
+    return {"ok": True}
+
+
+@app.delete("/api/outbound-lines/{line_id}")
+def delete_outbound_line(line_id: int):
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM outbound_lines WHERE id = ?", (line_id,)
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(404, "出庫先ラインが見つかりません")
     return {"ok": True}
 
 
