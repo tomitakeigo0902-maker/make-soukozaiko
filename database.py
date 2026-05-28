@@ -50,6 +50,7 @@ def init_db() -> None:
                 supplier      TEXT NOT NULL DEFAULT '',
                 location      TEXT NOT NULL DEFAULT '倉庫',
                 active        INTEGER NOT NULL DEFAULT 1,
+                sort_order    INTEGER NOT NULL DEFAULT 0,
                 created_at    TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
 
@@ -106,6 +107,10 @@ def init_db() -> None:
         if "pack_size" not in cols:
             conn.execute(
                 "ALTER TABLE materials ADD COLUMN pack_size TEXT NOT NULL DEFAULT ''"
+            )
+        if "sort_order" not in cols:
+            conn.execute(
+                "ALTER TABLE materials ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0"
             )
         tx_cols = [r["name"] for r in conn.execute("PRAGMA table_info(transactions)")]
         if "import_key" not in tx_cols:

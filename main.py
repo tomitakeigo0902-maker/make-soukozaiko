@@ -223,7 +223,7 @@ def list_materials():
                      FROM transactions t WHERE t.material_id = m.id), 0) AS stock
             FROM materials m
             WHERE m.active = 1
-            ORDER BY m.code
+            ORDER BY m.sort_order, m.code
             """
         ).fetchall()
         plans = conn.execute(
@@ -258,16 +258,23 @@ def list_catalog():
 
 @app.post("/api/materials/register")
 def register_materials(reg: RegisterIn):
-    """カタログから選んだ原料を、指定の保管場所で在庫登録（active=1）する。"""
+    """カタログから選んだ原料を、指定の保管場所で在庫登録（active=1）する。
+    入力 ids の順に sort_order を割り当て、在庫一覧の並び順を保つ。"""
     if not reg.ids:
         raise HTTPException(400, "登録する原料が選ばれていません")
     with get_conn() as conn:
-        placeholders = ",".join("?" * len(reg.ids))
-        cur = conn.execute(
-            f"UPDATE materials SET active = 1, location = ? WHERE id IN ({placeholders})",
-            [reg.location, *reg.ids],
-        )
-        return {"registered": cur.rowcount}
+        cur_max = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) AS m FROM materials"
+        ).fetchone()["m"]
+        registered = 0
+        for i, mid in enumerate(reg.ids):
+            cur = conn.execute(
+                "UPDATE materials SET active = 1, location = ?, sort_order = ? "
+                "WHERE id = ?",
+                (reg.location, cur_max + 1 + i, mid),
+            )
+            registered += cur.rowcount
+        return {"registered": registered}
 
 
 @app.post("/api/materials/{material_id}/unregister")
@@ -285,14 +292,17 @@ def unregister_material(material_id: int):
 @app.post("/api/materials", status_code=201)
 def create_material(m: MaterialIn):
     with get_conn() as conn:
+        cur_max = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) AS m FROM materials"
+        ).fetchone()["m"]
         try:
             cur = conn.execute(
                 "INSERT INTO materials "
                 "(code, name, product_name, pack_size, unit, reorder_point, "
-                "supplier, location) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "supplier, location, sort_order) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (m.code, m.name, m.product_name, m.pack_size, m.unit,
-                 m.reorder_point, m.supplier, m.location),
+                 m.reorder_point, m.supplier, m.location, cur_max + 1),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(400, f"原料コード「{m.code}」はすでに登録されています")
