@@ -111,6 +111,10 @@ class OutboundLineUpdate(BaseModel):
     items: list[int] = Field(default_factory=list)
 
 
+class ReorderIn(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+
+
 # --- 在庫計算ヘルパー ---------------------------------------------------------
 
 def _stock(conn: sqlite3.Connection, material_id: int) -> float:
@@ -333,6 +337,19 @@ def delete_material(material_id: int):
         cur = conn.execute("DELETE FROM materials WHERE id = ?", (material_id,))
         if cur.rowcount == 0:
             raise HTTPException(404, "原料が見つかりません")
+    return {"ok": True}
+
+
+@app.post("/api/materials/reorder")
+def reorder_materials(payload: ReorderIn):
+    """渡された id の順に sort_order を 1..N で割り当てる。"""
+    if not payload.ids:
+        return {"ok": True}
+    with get_conn() as conn:
+        for i, mid in enumerate(payload.ids, 1):
+            conn.execute(
+                "UPDATE materials SET sort_order = ? WHERE id = ?", (i, mid)
+            )
     return {"ok": True}
 
 

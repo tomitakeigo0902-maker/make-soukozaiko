@@ -148,6 +148,28 @@
     border: 1px dashed #ccc; border-radius: 5px; margin: 8px 0 12px;
   }
   .line-card h3 { margin: 0; font-size: 15px; color: #1f4e79; }
+  #stock-body tr[data-mid] { cursor: grab; }
+  #stock-body tr[data-mid].dragging { opacity: 0.35; cursor: grabbing; }
+  #stock-body tr[data-mid] td:first-child::before {
+    content: '⋮⋮'; color: #c5cad0; margin-right: 8px; letter-spacing: -1px;
+    font-size: 13px; user-select: none;
+  }
+  table.batch tbody td { padding: 12px 10px; vertical-align: middle; }
+  table.batch tbody tr.b-item { background: #fff; }
+  table.batch tbody tr.b-item:nth-child(even) { background: #fbfcfe; }
+  table.batch tbody tr.b-item:hover { background: #f3f7fb; }
+  table.batch tbody tr.b-item.low { background: #fff5f5; }
+  table.batch .b-name { font-weight: 600; color: #1f2937; }
+  table.batch .b-sub { font-size: 12px; color: #888; margin-top: 2px; }
+  table.batch input.b-qty {
+    font-size: 17px; font-weight: 700; padding: 10px 12px;
+    text-align: right; color: #1f4e79;
+  }
+  table.batch input.b-qty:focus {
+    outline: none; border-color: #1f4e79;
+    box-shadow: 0 0 0 3px rgba(31,78,121,.15);
+  }
+  table.batch .b-unit { color: #888; margin-left: 6px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -254,22 +276,23 @@
           <input type="text" id="batch-note" placeholder="任意（依頼表番号など）">
         </div>
       </div>
-      <label style="margin-top:16px">明細</label>
-      <table>
+      <div id="batch-meta" class="hint" style="margin-top:14px"></div>
+      <table id="batch-table" class="batch">
         <thead><tr>
-          <th style="width:42%">原料</th>
-          <th class="num" style="width:16%">数量</th>
-          <th class="num" style="width:18%">現在庫</th>
-          <th style="width:16%">状態</th>
-          <th style="width:8%"></th>
+          <th style="width:48%">品目</th>
+          <th class="num" style="width:14%">現在庫</th>
+          <th class="num" style="width:24%">出庫数量</th>
+          <th style="width:14%">状態</th>
         </tr></thead>
         <tbody id="batch-body"></tbody>
       </table>
-      <button type="button" class="mini" onclick="addBatchRow()" style="margin-top:10px">＋ 行を追加</button>
+      <div id="batch-empty" class="empty" style="display:none">
+        上の「出庫先ライン」を選ぶと、登録された品目が並びます。
+      </div>
       <div id="batch-result"></div>
       <div>
         <button type="button" class="btn" onclick="submitBatch()">まとめて出庫登録</button>
-        <button type="button" class="btn gray" onclick="resetBatch()">明細をクリア</button>
+        <button type="button" class="btn gray" onclick="resetBatchQty()">数量をクリア</button>
       </div>
     </div>
   </section>
@@ -588,7 +611,10 @@ function renderStock() {
     body.appendChild(gh);
     for (const m of group) {
       const tr = document.createElement('tr');
-      if (m.low) tr.className = 'low';
+      tr.dataset.mid = m.id;
+      tr.dataset.loc = loc;
+      tr.draggable = true;
+      if (m.low) tr.classList.add('low');
       tr.innerHTML =
         '<td>' + esc(m.code) + '</td>' +
         '<td>' + esc(m.supplier) + '</td>' +
@@ -603,6 +629,52 @@ function renderStock() {
       body.appendChild(tr);
     }
   }
+  attachStockDragDrop();
+}
+
+function attachStockDragDrop() {
+  const body = document.getElementById('stock-body');
+  body.querySelectorAll('tr[data-mid]').forEach(tr => {
+    tr.addEventListener('dragstart', e => {
+      dragSrc = tr;
+      tr.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+    });
+    tr.addEventListener('dragend', () => {
+      if (!dragSrc) return;
+      dragSrc.classList.remove('dragging');
+      dragSrc = null;
+      saveStockOrder();
+    });
+    tr.addEventListener('dragover', e => {
+      if (!dragSrc || dragSrc === tr) return;
+      // 別の保管場所への移動は禁止
+      if (dragSrc.dataset.loc !== tr.dataset.loc) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = tr.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height / 2;
+      tr.parentNode.insertBefore(dragSrc, before ? tr : tr.nextSibling);
+    });
+    tr.addEventListener('drop', e => e.preventDefault());
+  });
+}
+
+async function saveStockOrder() {
+  const body = document.getElementById('stock-body');
+  const ids = [...body.querySelectorAll('tr[data-mid]')].map(x => parseInt(x.dataset.mid, 10));
+  const cur = materials.map(m => m.id);
+  if (cur.length === ids.length && cur.every((v, i) => v === ids[i])) return;
+  try {
+    await api('POST', '/api/materials/reorder', { ids });
+  } catch (e) {
+    toast(e.message, true);
+    await loadMaterials();
+    return;
+  }
+  // ローカル状態も並びに合わせる
+  const map = Object.fromEntries(materials.map(m => [m.id, m]));
+  materials = ids.map(id => map[id]).filter(Boolean);
 }
 
 function renderMaterialTable() {
@@ -1001,38 +1073,39 @@ document.getElementById('edit-modal').onclick = (e) => {
 };
 
 // --- 一括出庫 ---
-function batchRowHtml() {
-  const opts = materialOptionGroups();
-  return '<td><select class="b-mat"><option value="">― 原料を選択 ―</option>' + opts + '</select></td>' +
-    '<td><input type="number" class="b-qty" step="any" min="0" placeholder="0"></td>' +
-    '<td class="b-stock num">—</td>' +
-    '<td class="b-status">—</td>' +
-    '<td><button type="button" class="mini danger" title="この行を削除">×</button></td>';
-}
-
-function addBatchRow(materialId, quantity) {
-  const tr = document.createElement('tr');
-  tr.innerHTML = batchRowHtml();
-  document.getElementById('batch-body').appendChild(tr);
-  tr.querySelector('.b-mat').onchange = () => updateBatchRow(tr);
-  tr.querySelector('.b-qty').oninput = () => updateBatchRow(tr);
-  tr.querySelector('button').onclick = () => { tr.remove(); ensureBatchRows(); };
-  if (materialId) tr.querySelector('.b-mat').value = materialId;
-  if (quantity != null) tr.querySelector('.b-qty').value = quantity;
-  if (materialId || quantity != null) updateBatchRow(tr);
+function renderBatchItems(items) {
+  const body = document.getElementById('batch-body');
+  const empty = document.getElementById('batch-empty');
+  const meta = document.getElementById('batch-meta');
+  body.innerHTML = '';
+  if (!items || !items.length) {
+    empty.style.display = 'block';
+    meta.textContent = '';
+    return;
+  }
+  empty.style.display = 'none';
+  meta.textContent = '明細 ' + items.length + ' 品目';
+  for (const m of items) {
+    const tr = document.createElement('tr');
+    tr.className = 'b-item';
+    tr.dataset.mid = m.id;
+    tr.innerHTML =
+      '<td><div class="b-name">' + esc(m.product_name || m.name || '') + '</div>'
+      + (m.pack_size ? '<div class="b-sub">' + esc(m.pack_size) + '</div>' : '')
+      + '</td>'
+      + '<td class="num">' + fmt(m.stock) + ' <span class="b-unit">' + esc(m.unit || '') + '</span></td>'
+      + '<td><input type="number" class="b-qty" step="any" min="0" placeholder="0" inputmode="decimal"></td>'
+      + '<td class="b-status">—</td>';
+    body.appendChild(tr);
+    tr.querySelector('.b-qty').addEventListener('input', () => updateBatchRow(tr));
+  }
 }
 
 function updateBatchRow(tr) {
-  const m = materials.find(x => x.id === parseInt(tr.querySelector('.b-mat').value, 10));
-  const stockTd = tr.querySelector('.b-stock');
+  const mid = parseInt(tr.dataset.mid, 10);
+  const m = materials.find(x => x.id === mid);
+  if (!m) return;
   const statusTd = tr.querySelector('.b-status');
-  if (!m) {
-    stockTd.textContent = '—';
-    statusTd.innerHTML = '—';
-    tr.classList.remove('low');
-    return;
-  }
-  stockTd.textContent = fmt(m.stock) + ' ' + m.unit;
   const q = parseFloat(tr.querySelector('.b-qty').value);
   if (!(q > 0)) {
     statusTd.innerHTML = '—';
@@ -1046,37 +1119,44 @@ function updateBatchRow(tr) {
   }
 }
 
-function ensureBatchRows() {
-  const body = document.getElementById('batch-body');
-  while (body.children.length < 5) addBatchRow();
-}
-
 function enterBatchTab() {
-  const body = document.getElementById('batch-body');
-  const hasData = [...body.querySelectorAll('tr')].some(tr =>
-    tr.querySelector('.b-mat').value || tr.querySelector('.b-qty').value);
-  if (!hasData) body.innerHTML = '';
-  ensureBatchRows();
+  document.getElementById('batch-result').innerHTML = '';
+  const sel = document.getElementById('batch-line');
+  if (sel.value) loadBatchTemplate(sel.value);
+  else renderBatchItems([]);
 }
 
-function resetBatch() {
-  document.getElementById('batch-body').innerHTML = '';
+function loadBatchTemplate(lineName) {
+  const ln = outboundLines.find(x => x.name === lineName);
+  if (!ln) { renderBatchItems([]); return; }
+  const items = ln.items
+    .filter(it => it.active)
+    .map(it => materials.find(m => m.id === it.material_id))
+    .filter(Boolean);
+  renderBatchItems(items);
+}
+
+function resetBatchQty() {
+  for (const inp of document.querySelectorAll('#batch-body .b-qty')) {
+    inp.value = '';
+  }
+  for (const tr of document.querySelectorAll('#batch-body tr.b-item')) {
+    tr.querySelector('.b-status').innerHTML = '—';
+    tr.classList.remove('low');
+  }
   document.getElementById('batch-result').innerHTML = '';
-  document.getElementById('batch-line').value = '';
-  document.getElementById('batch-note').value = '';
-  ensureBatchRows();
 }
 
 async function submitBatch() {
   const items = [];
-  for (const tr of document.querySelectorAll('#batch-body tr')) {
-    const mid = parseInt(tr.querySelector('.b-mat').value, 10);
+  for (const tr of document.querySelectorAll('#batch-body tr.b-item')) {
+    const mid = parseInt(tr.dataset.mid, 10);
     const qty = parseFloat(tr.querySelector('.b-qty').value);
     if (!mid || !(qty > 0)) continue;
     items.push({ material_id: mid, quantity: qty });
   }
   if (!items.length) {
-    toast('出庫する明細を入力してください', true);
+    toast('出庫する数量を入力してください', true);
     return;
   }
   const payload = {
@@ -1092,19 +1172,26 @@ async function submitBatch() {
     return;
   }
   await loadMaterials();
+  // 最新在庫を反映するため明細を再描画
+  const lineName = document.getElementById('batch-line').value;
+  if (lineName) loadBatchTemplate(lineName);
   const resultEl = document.getElementById('batch-result');
   if (!res.skipped.length) {
-    document.getElementById('batch-body').innerHTML = '';
-    document.getElementById('batch-line').value = '';
     document.getElementById('batch-note').value = '';
-    ensureBatchRows();
     resultEl.innerHTML = '<div class="alert ok">✓ ' + res.registered
       + ' 件すべて出庫登録しました。</div>';
     toast(res.registered + ' 件を出庫登録しました');
   } else {
-    document.getElementById('batch-body').innerHTML = '';
-    for (const s of res.skipped) addBatchRow(s.material_id, s.requested);
-    ensureBatchRows();
+    // 不足分の数量は残す
+    for (const s of res.skipped) {
+      const tr = document.querySelector(
+        '#batch-body tr.b-item[data-mid="' + s.material_id + '"]'
+      );
+      if (tr) {
+        tr.querySelector('.b-qty').value = s.requested;
+        updateBatchRow(tr);
+      }
+    }
     const names = res.skipped.map(s =>
       esc(s.name) + '（依頼 ' + fmt(s.requested) + ' ' + esc(s.unit)
       + ' ／ 在庫 ' + fmt(s.available) + ' ' + esc(s.unit) + '）').join('、');
@@ -1303,22 +1390,17 @@ function attachDragDrop(ul) {
 
 // --- 一括出庫のテンプレート読み込み ---
 function onBatchLineChange() {
-  const sel = document.getElementById('batch-line');
-  const name = sel.value;
-  if (!name) return;
-  const ln = outboundLines.find(x => x.name === name);
-  if (!ln || !ln.items.length) return;
-  const body = document.getElementById('batch-body');
-  const hasData = [...body.querySelectorAll('tr')].some(tr =>
-    tr.querySelector('.b-mat').value || tr.querySelector('.b-qty').value);
-  if (hasData && !confirm('「' + name + '」の品目を明細に読み込みます。'
-      + '現在の明細は置き換えられます。よろしいですか？')) return;
-  body.innerHTML = '';
-  for (const it of ln.items) {
-    if (!it.active) continue;
-    addBatchRow(it.material_id);
+  const name = document.getElementById('batch-line').value;
+  // 数量入力中なら確認する
+  const entered = [...document.querySelectorAll('#batch-body .b-qty')]
+    .some(inp => inp.value);
+  if (entered && !confirm('数量の入力がリセットされます。よろしいですか？')) {
+    // 選択を元に戻す手段がないので、そのまま読み込ませる前に止める
+    return;
   }
-  ensureBatchRows();
+  document.getElementById('batch-result').innerHTML = '';
+  if (!name) { renderBatchItems([]); return; }
+  loadBatchTemplate(name);
 }
 
 // --- 起動 ---
