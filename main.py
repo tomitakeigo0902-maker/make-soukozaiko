@@ -1191,24 +1191,26 @@ if __name__ == "__main__":
 
     host_name = socket.gethostname()
     ips = _lan_ips()
-    server_url = f"http://{ips[0]}:{PORT}/" if ips else f"http://{host_name}:{PORT}/"
+    # 配布用ショートカットは PC 名（ホスト名）で作る。DHCP で IP が変わっても
+    # リンクが切れないため、共有フォルダに置きっぱなしにするのに向く。
+    shortcut_url = f"http://{host_name}:{PORT}/"
 
     _ensure_firewall_rule(PORT)
-    _write_client_shortcut(server_url)
+    _write_client_shortcut(shortcut_url)
 
     print("=" * 60)
     print("  倉庫在庫管理アプリ を起動します")
     print("-" * 60)
     print(f"  このサーバー上で開く:  http://localhost:{PORT}/")
     print("  社内の他の PC から開く（ブラウザに入力するだけ・インストール不要）:")
+    print(f"      http://{host_name}:{PORT}/   ← おすすめ（PC名。IPが変わっても有効）")
     if ips:
         for ip in ips:
-            print(f"      http://{ip}:{PORT}/")
-    print(f"      http://{host_name}:{PORT}/   （名前で繋がる場合）")
+            print(f"      http://{ip}:{PORT}/   （PC名で繋がらない場合はこちら）")
     print("-" * 60)
     print("  ・他の PC では exe を開かず、上の URL をブラウザで開いてください。")
-    print("  ・このフォルダの「倉庫在庫管理を開く.url」を他 PC のデスクトップに")
-    print("    コピーすると、ダブルクリックで在庫画面を開けます。")
+    print("  ・このフォルダの「倉庫在庫管理を開く.url」を共有フォルダや各 PC の")
+    print("    デスクトップに置くと、ダブルクリックで在庫画面を開けます。")
     print("  ・停止するには、この黒い画面を閉じるか Ctrl+C を押してください。")
     print("=" * 60)
 
