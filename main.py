@@ -5,6 +5,7 @@
 社内の各 PC からブラウザで http://サーバー名:8000/ にアクセスできる。
 """
 
+import asyncio
 import datetime
 import hashlib
 import io
@@ -17,6 +18,7 @@ from contextlib import asynccontextmanager
 from typing import Literal, Optional
 
 import openpyxl
+import pyxlsb
 import xlrd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -36,10 +38,29 @@ STATIC_DIR = os.path.join(resource_dir(), "static")
 PORT = 8000
 
 
+_nightly_task: Optional[asyncio.Task] = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _nightly_task
     init_db()
-    yield
+    # 過去日(昨日以前)の未確定入荷予定は起動時に消化する。
+    # 今日の分は触らず、ユーザーがボタンか夜間ジョブで確定する。
+    try:
+        _confirm_pending_inbound(include_today=False)
+    except Exception as exc:
+        print(f"起動時の入荷予定キャッチアップでエラー: {exc}", file=sys.stderr)
+    _nightly_task = asyncio.create_task(_nightly_confirm_loop())
+    try:
+        yield
+    finally:
+        if _nightly_task:
+            _nightly_task.cancel()
+            try:
+                await _nightly_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 app = FastAPI(title="倉庫在庫管理", lifespan=lifespan)
@@ -118,16 +139,55 @@ class ReorderIn(BaseModel):
 # --- 在庫計算ヘルパー ---------------------------------------------------------
 
 def _stock(conn: sqlite3.Connection, material_id: int) -> float:
-    """現在庫。入庫は納品日が今日以前のものだけを数える（未来＝入荷予定は除外）。"""
+    """現在庫。confirmed_at がついた入庫のみ加算する（入荷予定＝未確定は除外）。"""
     row = conn.execute(
         "SELECT COALESCE(SUM(CASE "
-        "WHEN type = 'in' AND date(created_at) <= date('now', 'localtime') "
-        "THEN quantity "
+        "WHEN type = 'in' AND confirmed_at IS NOT NULL THEN quantity "
         "WHEN type = 'out' THEN -quantity ELSE 0 END), 0) AS s "
         "FROM transactions WHERE material_id = ?",
         (material_id,),
     ).fetchone()
     return row["s"]
+
+
+def _confirm_pending_inbound(include_today: bool) -> int:
+    """未確定の入荷予定を確定状態にする。
+
+    include_today=True なら今日の納品日も対象に含める。False なら昨日以前のみ。
+    確定された件数を返す。
+    """
+    cmp_op = "<=" if include_today else "<"
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE transactions "
+            "SET confirmed_at = datetime('now', 'localtime') "
+            "WHERE type = 'in' AND confirmed_at IS NULL "
+            f"AND date(created_at) {cmp_op} date('now', 'localtime')"
+        )
+        return cur.rowcount
+
+
+async def _nightly_confirm_loop() -> None:
+    """毎日 23:55 に未確定の入荷予定（今日以前）を自動確定する。"""
+    while True:
+        now = datetime.datetime.now()
+        target = now.replace(hour=23, minute=55, second=0, microsecond=0)
+        if target <= now:
+            target += datetime.timedelta(days=1)
+        try:
+            await asyncio.sleep((target - now).total_seconds())
+        except asyncio.CancelledError:
+            return
+        try:
+            n = _confirm_pending_inbound(include_today=True)
+            if n:
+                print(
+                    f"[nightly] {datetime.datetime.now():%Y-%m-%d %H:%M} "
+                    f"入荷予定 {n} 件を自動確定",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
+            print(f"[nightly] エラー: {exc}", file=sys.stderr)
 
 
 def _cell_str(v) -> str:
@@ -150,6 +210,15 @@ def _parse_inbound_date(v) -> str:
         return v.strftime("%Y-%m-%d")
     if isinstance(v, datetime.date):
         return v.strftime("%Y-%m-%d")
+    # xlsb は日付セルもただの数値として返るので Excel シリアル番号として解釈する。
+    # 30000〜80000 ≒ 1982〜2118 を許容範囲とする。
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        if 30000 <= v <= 80000:
+            try:
+                base = datetime.date(1899, 12, 30)
+                return (base + datetime.timedelta(days=int(v))).strftime("%Y-%m-%d")
+            except (OverflowError, ValueError):
+                pass
     m = re.match(r"(?:(\d{2,4})/)?(\d{1,2})/(\d{1,2})$", _cell_str(v))
     if m:
         year = datetime.date.today().year if m.group(1) is None else int(m.group(1))
@@ -196,9 +265,54 @@ def _read_xls(content: bytes):
     return rows
 
 
-def _read_workbook(filename: str, content: bytes):
-    """アップロードされた Excel(.xlsx / .xls) を行のリストとして読み込む。"""
-    is_xls = (filename or "").lower().endswith(".xls")
+def _read_xlsb_all(content: bytes) -> dict[str, list]:
+    """xlsb（マクロ有効ブック）の全シートを {名前: 行リスト} で返す。"""
+    sheets: dict[str, list] = {}
+    with pyxlsb.open_workbook(io.BytesIO(content)) as wb:
+        for sname in wb.sheets:
+            with wb.get_sheet(sname) as sh:
+                sheets[sname] = [[c.v for c in row] for row in sh.rows()]
+    return sheets
+
+
+def _pick_sheet_with_header(
+    sheets: dict[str, list],
+    header_keywords: Optional[list[str]],
+    search_rows: int = 20,
+) -> list:
+    """複数シートから、見出し行にキーワードを最も多く含むシートを選ぶ。"""
+    if not sheets:
+        return []
+    if not header_keywords:
+        return next(iter(sheets.values()))
+    best_rows = None
+    best_score = 0
+    for rows in sheets.values():
+        for row in rows[:search_rows]:
+            cells = [_norm(_cell_str(c)) for c in (row or [])]
+            score = sum(1 for k in header_keywords if k in cells)
+            if score > best_score:
+                best_score = score
+                best_rows = rows
+                break
+    return best_rows if best_rows is not None else next(iter(sheets.values()))
+
+
+def _read_workbook(
+    filename: str,
+    content: bytes,
+    header_keywords: Optional[list[str]] = None,
+):
+    """アップロードされた Excel(.xlsx / .xls / .xlsb) を行のリストとして読み込む。
+
+    .xlsb は複数シートを含むことが多いため、header_keywords を指定すると
+    その語句を最も多く含む見出し行を持つシートを返す。
+    """
+    fn = (filename or "").lower()
+    if fn.endswith(".xlsb"):
+        sheets = _read_xlsb_all(content)
+        return _pick_sheet_with_header(sheets, header_keywords)
+    is_xls = fn.endswith(".xls")
     readers = [_read_xls, _read_xlsx] if is_xls else [_read_xlsx, _read_xls]
     for reader in readers:
         try:
@@ -220,8 +334,7 @@ def list_materials():
             """
             SELECT m.*,
                    COALESCE((SELECT SUM(CASE
-                       WHEN type = 'in'
-                            AND date(created_at) <= date('now', 'localtime')
+                       WHEN type = 'in' AND confirmed_at IS NOT NULL
                             THEN quantity
                        WHEN type = 'out' THEN -quantity ELSE 0 END)
                      FROM transactions t WHERE t.material_id = m.id), 0) AS stock
@@ -232,7 +345,7 @@ def list_materials():
         ).fetchall()
         plans = conn.execute(
             "SELECT material_id, date(created_at) AS d, quantity FROM transactions "
-            "WHERE type = 'in' AND date(created_at) > date('now', 'localtime') "
+            "WHERE type = 'in' AND confirmed_at IS NULL "
             "ORDER BY created_at"
         ).fetchall()
     incoming = {}
@@ -515,9 +628,11 @@ def create_transaction(tx: TransactionIn):
     with get_conn() as conn:
         if conn.execute("SELECT 1 FROM materials WHERE id = ?", (tx.material_id,)).fetchone() is None:
             raise HTTPException(404, "原料が見つかりません")
+        # 手入力の入出庫はその場で確定扱い（在庫に即時反映）
         cur = conn.execute(
-            "INSERT INTO transactions (material_id, type, quantity, line, note) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO transactions "
+            "(material_id, type, quantity, line, note, confirmed_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now', 'localtime'))",
             (tx.material_id, tx.type, tx.quantity, tx.line, tx.note),
         )
         if _stock(conn, tx.material_id) < 0:
@@ -587,8 +702,9 @@ def create_batch_out(batch: BatchOutIn):
                 )
                 continue
             conn.execute(
-                "INSERT INTO transactions (material_id, type, quantity, line, note) "
-                "VALUES (?, 'out', ?, ?, ?)",
+                "INSERT INTO transactions "
+                "(material_id, type, quantity, line, note, confirmed_at) "
+                "VALUES (?, 'out', ?, ?, ?, datetime('now', 'localtime'))",
                 (item.material_id, item.quantity, batch.line, batch.note),
             )
             registered += 1
@@ -606,7 +722,10 @@ async def import_materials(file: UploadFile = File(...)):
     一般名称・原材料名・入数・仕入先のみ更新する（保管場所・発注点・登録状態は維持）。
     """
     content = await file.read()
-    rows = _read_workbook(file.filename, content)
+    rows = _read_workbook(
+        file.filename, content,
+        header_keywords=["ｺｰﾄﾞ", "コード", "一般名称", "原材料名"],
+    )
 
     header = []
     header_idx = None
@@ -677,12 +796,16 @@ async def import_transactions(file: UploadFile = File(...)):
 
     商品コードで原料を特定し、見つからなければ品名で照合する。
     すでに倉庫に在庫登録されている原料の行だけを取り込み、未登録の行はスキップする。
-    個数を入庫数量、納品日を入庫日として記録する。納品日が未来の行は
-    入荷予定として記録され、現在庫には加算されない（納品日が来れば自動で加算）。
+    個数を入庫数量、納品日を入庫日として記録する。納品日が「今日」もしくは未来の
+    行は入荷予定（未確定）として記録され、現在庫には加算されない。
+    「本日の入荷予定を反映」ボタンか夜間ジョブで確定すると在庫に加算される。
     各行の指紋を import_key に保存し、再取り込み時の二重登録を防ぐ。
     """
     content = await file.read()
-    rows = _read_workbook(file.filename, content)
+    rows = _read_workbook(
+        file.filename, content,
+        header_keywords=["Fr商品コード", "商品コード", "納品日", "個数"],
+    )
 
     header = []
     header_idx = None
@@ -780,24 +903,69 @@ async def import_transactions(file: UploadFile = File(...)):
                 p for p in [cell(row, c_maker), cell(row, c_pack)] if p
             )
             date_str = _parse_inbound_date(raw(row, c_date))
+            # 過去日(昨日以前)は到着済みとして即時確定、今日と未来は入荷予定(未確定)で
+            # 入れる。確定はボタンか夜間ジョブで行う。
+            if date_str < today:
+                confirmed_at = date_str
+                imported += 1
+            else:
+                confirmed_at = None
+                planned += 1
             conn.execute(
                 "INSERT INTO transactions "
-                "(material_id, type, quantity, line, note, import_key, created_at) "
-                "VALUES (?, 'in', ?, '', ?, ?, ?)",
-                (mat["id"], qty, note, key, date_str),
+                "(material_id, type, quantity, line, note, import_key, "
+                "created_at, confirmed_at) "
+                "VALUES (?, 'in', ?, '', ?, ?, ?, ?)",
+                (mat["id"], qty, note, key, date_str, confirmed_at),
             )
             existing_keys.add(key)
-            # 納品日が未来なら入荷予定（現在庫には加算されない）
-            if date_str > today:
-                planned += 1
-            else:
-                imported += 1
     return {
         "imported": imported,
         "planned": planned,
         "skipped_dup": skipped_dup,
         "skipped": skipped,
     }
+
+
+# --- 入荷予定の確定 API -------------------------------------------------------
+
+@app.get("/api/inbound/pending")
+def list_inbound_pending():
+    """未確定の入荷予定を一覧で返す（過去日・今日・未来をすべて含む）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT t.id, t.quantity, date(t.created_at) AS d, "
+            "m.code, m.name, m.product_name, m.unit "
+            "FROM transactions t JOIN materials m ON m.id = t.material_id "
+            "WHERE t.type = 'in' AND t.confirmed_at IS NULL "
+            "ORDER BY t.created_at, t.id"
+        ).fetchall()
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    due = [dict(r) for r in rows if r["d"] <= today]
+    future = [dict(r) for r in rows if r["d"] > today]
+    return {"due_today_or_past": due, "future": future}
+
+
+@app.post("/api/inbound/confirm-today")
+def confirm_inbound_today():
+    """納品日が今日以前の未確定入荷予定を確定する（在庫に加算する）。"""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT t.id, t.quantity, date(t.created_at) AS d, "
+            "m.code, m.name, m.product_name, m.unit "
+            "FROM transactions t JOIN materials m ON m.id = t.material_id "
+            "WHERE t.type = 'in' AND t.confirmed_at IS NULL "
+            "AND date(t.created_at) <= date('now', 'localtime') "
+            "ORDER BY t.created_at, t.id"
+        ).fetchall()
+        if rows:
+            conn.execute(
+                "UPDATE transactions "
+                "SET confirmed_at = datetime('now', 'localtime') "
+                "WHERE type = 'in' AND confirmed_at IS NULL "
+                "AND date(created_at) <= date('now', 'localtime')"
+            )
+    return {"confirmed": len(rows), "items": [dict(r) for r in rows]}
 
 
 # --- Excel 出力 API -----------------------------------------------------------

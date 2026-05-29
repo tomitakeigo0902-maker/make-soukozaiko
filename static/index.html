@@ -211,6 +211,17 @@
 
   <!-- 入出庫登録 -->
   <section id="register">
+    <div class="card" id="card-confirm-today">
+      <div class="toolbar">
+        <h2 style="margin:0">本日の入荷予定を反映</h2>
+        <button type="button" class="btn" style="margin-top:0"
+          onclick="confirmTodayInbound()">本日分を在庫に反映</button>
+      </div>
+      <p class="hint" style="margin-top:8px">納品日が「今日以前」で未反映の入荷予定を現在庫に加算します。
+        押し忘れた場合は、その日の 23:55 に自動で反映されます。</p>
+      <div id="confirm-today-status" class="hint" style="margin-top:6px"></div>
+      <div id="confirm-today-result"></div>
+    </div>
     <div class="card">
       <h2>入出庫の登録</h2>
       <form id="tx-form" autocomplete="off">
@@ -238,18 +249,19 @@
     </div>
     <div class="card">
       <h2>入庫記録の Excel 取り込み</h2>
-      <p class="hint">入庫記録の Excel ファイル（.xlsx / .xls）を選ぶと、入庫履歴に取り込みます。
-        原料用・包材用どちらの様式にも対応します。商品コード（見つからなければ品名）で
-        原料・包材を判定し、「個数」を入庫数として「納品日」付けで記録します。
-        すでに倉庫に登録されている原料の行だけを取り込みます（未登録の行はそのままスキップ。
-        取り込みたい場合は「原料マスター」で倉庫に登録してください）。
-        納品日が未来の行は「入荷予定」として在庫一覧に表示されます（現在庫には加算されず、
-        納品日が来れば自動で加算されます）。
+      <p class="hint">入庫記録の Excel ファイル（.xlsx / .xls / .xlsb）を選ぶと、入庫履歴に取り込みます。
+        マクロ有効ブック（.xlsb）の場合は、複数シートの中から「Fr商品コード」「個数」「納品日」を
+        含むシートを自動で選びます。商品コード（見つからなければ品名）で原料を判定し、
+        「個数」を入庫数として「納品日」付けで記録します。
+        すでに倉庫に登録されている原料の行だけを取り込みます（未登録の行はそのままスキップ）。
+        納品日が「今日」または未来の行は「入荷予定」として在庫一覧に表示されます。
+        現在庫には加算されず、「本日の入荷予定を反映」ボタンか毎日 23:55 の自動処理で
+        確定すると加算されます（過去日は取り込み時に即時加算）。
         すでに取り込んだ行は二重に登録されないので、くり返し取り込めます。</p>
       <div class="row">
         <div>
-          <label>入庫記録の Excel ファイル</label>
-          <input type="file" id="inbound-file" accept=".xlsx,.xls">
+          <label>入庫記録のファイル（.xlsx / .xls / .xlsb）</label>
+          <input type="file" id="inbound-file" accept=".xlsx,.xls,.xlsb">
         </div>
       </div>
       <button type="button" class="btn" onclick="importInbound()">取り込む</button>
@@ -388,7 +400,7 @@
     </div>
     <div class="card">
       <h2>Excel から一括取り込み（カタログ作成）</h2>
-      <p class="hint">原材料データベースのエクセルファイル（.xlsx / .xls）を読み込むと、
+      <p class="hint">原材料データベースのエクセルファイル（.xlsx / .xls / .xlsb）を読み込むと、
         全商品を「カタログ」に取り込みます。見出し行から
         コード／一般名称／原材料名／入数／仕入先 を自動で読み取り、
         すでに同じコードがある原料は最新内容に更新します
@@ -397,7 +409,7 @@
       <div class="row">
         <div>
           <label>原材料データベースのエクセルファイル</label>
-          <input type="file" id="import-file" accept=".xlsx,.xls">
+          <input type="file" id="import-file" accept=".xlsx,.xls,.xlsb">
         </div>
       </div>
       <button type="button" class="btn" onclick="importMaterials()">取り込む</button>
@@ -575,6 +587,60 @@ async function loadMaterials() {
   renderStock();
   renderMaterialTable();
   fillMaterialSelects();
+  updateConfirmTodayStatus();
+}
+
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-'
+    + String(d.getMonth() + 1).padStart(2, '0') + '-'
+    + String(d.getDate()).padStart(2, '0');
+}
+
+function updateConfirmTodayStatus() {
+  const el = document.getElementById('confirm-today-status');
+  if (!el) return;
+  const today = todayStr();
+  let dueCount = 0;
+  let futureCount = 0;
+  for (const m of materials) {
+    for (const it of (m.incoming || [])) {
+      if (it.date && it.date <= today) dueCount++;
+      else if (it.date) futureCount++;
+    }
+  }
+  let html = '';
+  if (dueCount > 0) {
+    html = '<b style="color:#1f4e79">本日反映できる入荷予定：' + dueCount + ' 件</b>';
+  } else {
+    html = '<span style="color:#888">本日反映する入荷予定はありません。</span>';
+  }
+  if (futureCount > 0) {
+    html += '　<span style="color:#888">（後日の入荷予定 ' + futureCount + ' 件）</span>';
+  }
+  el.innerHTML = html;
+}
+
+async function confirmTodayInbound() {
+  let res;
+  try {
+    res = await api('POST', '/api/inbound/confirm-today');
+  } catch (e) { toast(e.message, true); return; }
+  await loadMaterials();
+  const div = document.getElementById('confirm-today-result');
+  if (!res.confirmed) {
+    div.innerHTML = '<div class="alert ok">反映する入荷予定はありませんでした。</div>';
+    toast('反映する入荷予定はありません');
+    return;
+  }
+  const list = res.items.map(it =>
+    '・' + esc(it.product_name || it.name || '')
+    + '　' + fmt(it.quantity) + esc(it.unit || '')
+    + '　<span style="color:#888">(納品日 ' + esc(it.d) + ')</span>'
+  ).join('<br>');
+  div.innerHTML = '<div class="alert ok">' + res.confirmed
+    + ' 件を在庫に反映しました：<br>' + list + '</div>';
+  toast(res.confirmed + ' 件を在庫に反映しました');
 }
 
 function incomingHtml(m) {

@@ -117,6 +117,18 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE transactions ADD COLUMN import_key TEXT NOT NULL DEFAULT ''"
             )
+        if "confirmed_at" not in tx_cols:
+            conn.execute(
+                "ALTER TABLE transactions ADD COLUMN confirmed_at TEXT"
+            )
+            # 既存データの取り扱い: 既存の在庫数を変えないよう、
+            # 過去〜本日の 'in' と 'out' は確定済みとして埋める。
+            conn.execute(
+                "UPDATE transactions SET confirmed_at = created_at "
+                "WHERE confirmed_at IS NULL "
+                "AND (type = 'out' "
+                "OR (type = 'in' AND date(created_at) <= date('now', 'localtime')))"
+            )
         # 既存の materials.location を locations テーブルにも反映する
         for r in conn.execute(
             "SELECT DISTINCT location FROM materials WHERE location != ''"
