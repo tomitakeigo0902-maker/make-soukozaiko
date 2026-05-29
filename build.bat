@@ -1,8 +1,7 @@
 @echo off
-chcp 65001 >nul
 title Soukozaiko - build exe
 
-python --version >nul 2>&1
+python --version > nul 2>&1
 if errorlevel 1 (
     echo.
     echo [ERROR] Python was not found on this PC.
@@ -16,7 +15,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/2] Installing required libraries...
+echo [1/3] Installing required libraries...
 python -m pip install -r requirements.txt
 if errorlevel 1 (
     echo.
@@ -37,35 +36,34 @@ if errorlevel 1 (
 
 echo.
 echo [3/3] Copying helper files next to the exe...
-copy /Y "ã‚µãƒ¼ãƒãƒ¼è‡ªå‹•èµ·å‹•ã‚’è¨­å®š.bat" "dist\" >nul 2>&1
-copy /Y "ã‚µãƒ¼ãƒãƒ¼è‡ªå‹•èµ·å‹•ã‚’è§£é™¤.bat" "dist\" >nul 2>&1
+copy /Y "ƒT[ƒo[©“®‹N“®‚ğİ’è.bat" "dist\" > nul 2>&1
+copy /Y "ƒT[ƒo[©“®‹N“®‚ğ‰ğœ.bat" "dist\" > nul 2>&1
 
 echo.
 echo ============================================================
 echo  Done!  Output folder:  dist\
 echo    - soukozaiko.exe              (the app)
-echo    - ã‚µãƒ¼ãƒãƒ¼è‡ªå‹•èµ·å‹•ã‚’è¨­å®š.bat   (set up auto-start, run once)
-echo    - ã‚µãƒ¼ãƒãƒ¼è‡ªå‹•èµ·å‹•ã‚’è§£é™¤.bat   (undo auto-start)
+echo    - ƒT[ƒo[©“®‹N“®‚ğİ’è.bat   (set up auto-start, run once)
+echo    - ƒT[ƒo[©“®‹N“®‚ğ‰ğœ.bat   (undo auto-start)
 echo.
 echo  HOW TO USE (server PC):
-echo    1. Copy the whole dist\ folder to ONE office PC (the "server").
-echo       No Python needed on that PC. Avoid Program Files; e.g. use
+echo    1. Copy the whole dist\ folder to ONE office PC (the server).
+echo       No Python needed there. Avoid Program Files; e.g. use
 echo       C:\soukozaiko\ so the data file can be written easily.
 echo    2. To start it ONCE: double-click soukozaiko.exe.
-echo       (On first run, click "Yes" if Windows asks to allow the
+echo       (On first run, click Yes if Windows asks to allow the
 echo        firewall rule, so other PCs can connect.)
 echo    3. RECOMMENDED for an always-on server: double-click
-echo       "ã‚µãƒ¼ãƒãƒ¼è‡ªå‹•èµ·å‹•ã‚’è¨­å®š.bat" once. After that the server
-echo       starts automatically every time Windows boots, with no
-echo       need to launch the exe by hand.
-echo    4. Data is saved in inventory.db next to the exe. Back it up by
-echo       copying that file.
+echo       "ƒT[ƒo[©“®‹N“®‚ğİ’è.bat" once. After that the server
+echo       starts automatically every time Windows boots.
+echo    4. Data is saved in inventory.db next to the exe. Back it up
+echo       by copying that file.
 echo.
 echo  HOW TO USE (other PCs):
 echo    - Do NOT open the exe. Just open a web browser and go to the
 echo      URL shown in the server's black window, e.g.
-echo          http://192.168.x.x:8000/
-echo    - Or copy the file "å€‰åº«åœ¨åº«ç®¡ç†ã‚’é–‹ã.url" (created next to the
-echo      exe at startup) onto each PC's desktop and double-click it.
+echo          http://(server-pc-name):8000/
+echo    - Or copy "‘qŒÉİŒÉŠÇ—‚ğŠJ‚­.url" (created next to the exe at
+echo      startup) into a shared folder and double-click it.
 echo ============================================================
 pause
