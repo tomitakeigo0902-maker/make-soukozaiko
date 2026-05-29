@@ -169,6 +169,7 @@
       <div class="toolbar">
         <h2>原料の現在庫</h2>
         <div>
+          <button class="mini" onclick="exportStocktake()">棚卸シートを出力</button>
           <button class="mini" onclick="addLocation()">＋ 保管場所を追加</button>
           <button class="mini" onclick="loadMaterials()">再読み込み</button>
         </div>
@@ -520,6 +521,14 @@ function fillLocationSelects() {
       '<option value="' + esc(l) + '">' + esc(l) + '</option>').join('');
     if (LOCATIONS.includes(cur)) sel.value = cur;
   }
+}
+
+function exportStocktake() {
+  if (!materials.length) {
+    toast('在庫一覧に原料がありません。先に原料を登録してください', true);
+    return;
+  }
+  window.location.href = '/api/export/stocktake';
 }
 
 async function addLocation() {

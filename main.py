@@ -19,7 +19,7 @@ from typing import Literal, Optional
 import openpyxl
 import xlrd
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from database import get_conn, init_db
@@ -781,6 +781,92 @@ async def import_transactions(file: UploadFile = File(...)):
         "skipped_dup": skipped_dup,
         "skipped": skipped,
     }
+
+
+# --- Excel 出力 API -----------------------------------------------------------
+
+@app.get("/api/export/stocktake")
+def export_stocktake():
+    """棚卸用テンプレートを Excel で返す。数量・メモ列は空欄のまま。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT code, name, product_name, pack_size, unit, supplier, location "
+            "FROM materials WHERE active = 1 "
+            "ORDER BY location, sort_order, code"
+        ).fetchall()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "棚卸"
+
+    today = datetime.date.today()
+    headers = ["コード", "仕入先", "名称", "入り数", "数量", "メモ"]
+    widths = [12, 20, 38, 14, 12, 22]
+
+    title = ws.cell(row=1, column=1, value=f"棚卸シート（{today.strftime('%Y/%m/%d')} 出力）")
+    title.font = Font(size=13, bold=True)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+
+    for i, (h, w) in enumerate(zip(headers, widths), 1):
+        cell = ws.cell(row=3, column=i, value=h)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill("solid", fgColor="DDEBF7")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[3].height = 22
+
+    thin = Side(style="thin", color="999999")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    loc_font = Font(bold=True, color="FFFFFF")
+    loc_fill = PatternFill("solid", fgColor="1F4E79")
+
+    r = 4
+    cur_loc = None
+    for row in rows:
+        loc = row["location"] or "倉庫"
+        if loc != cur_loc:
+            # 保管場所の見出し行
+            cell = ws.cell(row=r, column=1, value=loc)
+            cell.font = loc_font
+            cell.fill = loc_fill
+            cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+            for ci in range(2, len(headers) + 1):
+                ws.cell(row=r, column=ci).fill = loc_fill
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=len(headers))
+            ws.row_dimensions[r].height = 20
+            r += 1
+            cur_loc = loc
+        ws.cell(row=r, column=1, value=row["code"])
+        ws.cell(row=r, column=2, value=row["supplier"] or "")
+        ws.cell(row=r, column=3, value=row["product_name"] or row["name"] or "")
+        ws.cell(row=r, column=4, value=row["pack_size"] or "")
+        # 数量(5)、メモ(6)は空欄のまま
+        for ci in range(1, len(headers) + 1):
+            ws.cell(row=r, column=ci).border = border
+        ws.row_dimensions[r].height = 24
+        r += 1
+
+    ws.freeze_panes = "A4"
+    ws.print_title_rows = "3:3"
+    ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    filename = f"stocktake_{today.strftime('%Y%m%d')}.xlsx"
+    return Response(
+        content=buf.getvalue(),
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # --- 画面 ---------------------------------------------------------------------
