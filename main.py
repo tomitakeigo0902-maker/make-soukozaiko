@@ -794,9 +794,18 @@ def export_stocktake():
 
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT code, name, product_name, pack_size, unit, supplier, location "
-            "FROM materials WHERE active = 1 "
-            "ORDER BY location, sort_order, code"
+            """
+            SELECT m.name, m.product_name, m.pack_size, m.unit, m.supplier, m.location,
+                   COALESCE((SELECT SUM(CASE
+                       WHEN type = 'in'
+                            AND date(created_at) <= date('now', 'localtime')
+                            THEN quantity
+                       WHEN type = 'out' THEN -quantity ELSE 0 END)
+                     FROM transactions t WHERE t.material_id = m.id), 0) AS stock
+            FROM materials m
+            WHERE m.active = 1
+            ORDER BY m.location, m.sort_order, m.code
+            """
         ).fetchall()
 
     wb = Workbook()
@@ -804,8 +813,8 @@ def export_stocktake():
     ws.title = "棚卸"
 
     today = datetime.date.today()
-    headers = ["コード", "仕入先", "名称", "入り数", "数量", "メモ"]
-    widths = [12, 20, 38, 14, 12, 22]
+    headers = ["仕入先", "名称", "入り数", "アプリ数量", "実数", "メモ"]
+    widths = [20, 40, 14, 12, 12, 24]
 
     title = ws.cell(row=1, column=1, value=f"棚卸シート（{today.strftime('%Y/%m/%d')} 出力）")
     title.font = Font(size=13, bold=True)
@@ -840,11 +849,13 @@ def export_stocktake():
             ws.row_dimensions[r].height = 20
             r += 1
             cur_loc = loc
-        ws.cell(row=r, column=1, value=row["code"])
-        ws.cell(row=r, column=2, value=row["supplier"] or "")
-        ws.cell(row=r, column=3, value=row["product_name"] or row["name"] or "")
-        ws.cell(row=r, column=4, value=row["pack_size"] or "")
-        # 数量(5)、メモ(6)は空欄のまま
+        ws.cell(row=r, column=1, value=row["supplier"] or "")
+        ws.cell(row=r, column=2, value=row["product_name"] or row["name"] or "")
+        ws.cell(row=r, column=3, value=row["pack_size"] or "")
+        ws.cell(row=r, column=4, value=row["stock"])
+        # 実数(5)、メモ(6)は空欄のまま
+        ws.cell(row=r, column=4).alignment = Alignment(horizontal="right")
+        ws.cell(row=r, column=5).alignment = Alignment(horizontal="right")
         for ci in range(1, len(headers) + 1):
             ws.cell(row=r, column=ci).border = border
         ws.row_dimensions[r].height = 24
