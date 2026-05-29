@@ -1212,9 +1212,15 @@ if __name__ == "__main__":
     print("  ・停止するには、この黒い画面を閉じるか Ctrl+C を押してください。")
     print("=" * 60)
 
-    # サーバー PC では自動でブラウザを開く（少し待ってから）
-    threading.Timer(
-        1.5, lambda: webbrowser.open(f"http://localhost:{PORT}/")
-    ).start()
+    # サーバー PC では自動でブラウザを開く（少し待ってから）。
+    # ただし自動起動（タスクスケジューラ等）では画面が無いので開かない。
+    def _open_browser():
+        try:
+            webbrowser.open(f"http://localhost:{PORT}/")
+        except Exception:
+            pass
+
+    if os.environ.get("SOUKOZAIKO_NO_BROWSER") != "1":
+        threading.Timer(1.5, _open_browser).start()
 
     uvicorn.run(app, host="0.0.0.0", port=PORT)

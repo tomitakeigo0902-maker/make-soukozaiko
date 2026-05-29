@@ -26,7 +26,7 @@ if errorlevel 1 (
 )
 
 echo.
-echo [2/2] Building the exe...
+echo [2/3] Building the exe...
 pyinstaller --noconfirm --onefile --name soukozaiko --add-data "static;static" main.py
 if errorlevel 1 (
     echo.
@@ -36,17 +36,29 @@ if errorlevel 1 (
 )
 
 echo.
+echo [3/3] Copying helper files next to the exe...
+copy /Y "サーバー自動起動を設定.bat" "dist\" >nul 2>&1
+copy /Y "サーバー自動起動を解除.bat" "dist\" >nul 2>&1
+
+echo.
 echo ============================================================
-echo  Done!  Output file:  dist\soukozaiko.exe
+echo  Done!  Output folder:  dist\
+echo    - soukozaiko.exe              (the app)
+echo    - サーバー自動起動を設定.bat   (set up auto-start, run once)
+echo    - サーバー自動起動を解除.bat   (undo auto-start)
 echo.
 echo  HOW TO USE (server PC):
-echo    1. Copy dist\soukozaiko.exe to ONE office PC (the "server").
-echo       No Python needed on that PC.
-echo    2. Double-click soukozaiko.exe to start. A black window stays
-echo       open and the browser opens automatically.
+echo    1. Copy the whole dist\ folder to ONE office PC (the "server").
+echo       No Python needed on that PC. Avoid Program Files; e.g. use
+echo       C:\soukozaiko\ so the data file can be written easily.
+echo    2. To start it ONCE: double-click soukozaiko.exe.
 echo       (On first run, click "Yes" if Windows asks to allow the
 echo        firewall rule, so other PCs can connect.)
-echo    3. Data is saved in inventory.db next to the exe. Back it up by
+echo    3. RECOMMENDED for an always-on server: double-click
+echo       "サーバー自動起動を設定.bat" once. After that the server
+echo       starts automatically every time Windows boots, with no
+echo       need to launch the exe by hand.
+echo    4. Data is saved in inventory.db next to the exe. Back it up by
 echo       copying that file.
 echo.
 echo  HOW TO USE (other PCs):
