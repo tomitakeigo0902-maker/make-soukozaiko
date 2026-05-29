@@ -39,8 +39,21 @@ echo.
 echo ============================================================
 echo  Done!  Output file:  dist\soukozaiko.exe
 echo.
-echo  Copy this single exe to your office server and
-echo  double-click it to run. No Python needed on the server.
-echo  Data is saved in inventory.db next to the exe.
+echo  HOW TO USE (server PC):
+echo    1. Copy dist\soukozaiko.exe to ONE office PC (the "server").
+echo       No Python needed on that PC.
+echo    2. Double-click soukozaiko.exe to start. A black window stays
+echo       open and the browser opens automatically.
+echo       (On first run, click "Yes" if Windows asks to allow the
+echo        firewall rule, so other PCs can connect.)
+echo    3. Data is saved in inventory.db next to the exe. Back it up by
+echo       copying that file.
+echo.
+echo  HOW TO USE (other PCs):
+echo    - Do NOT open the exe. Just open a web browser and go to the
+echo      URL shown in the server's black window, e.g.
+echo          http://192.168.x.x:8000/
+echo    - Or copy the file "倉庫在庫管理を開く.url" (created next to the
+echo      exe at startup) onto each PC's desktop and double-click it.
 echo ============================================================
 pause

@@ -2,7 +2,11 @@
 
 工場倉庫の原料の入庫・出庫を記録し、現在庫を自動算出する社内 Web アプリ。
 このファイルを直接実行すると 0.0.0.0:8000 でサーバーが起動し、
-社内の各 PC からブラウザで http://サーバー名:8000/ にアクセスできる。
+社内の各 PC からブラウザで http://サーバーのIP:8000/ にアクセスできる。
+
+サーバーは 1 台だけで exe を起動し、他の PC は「ブラウザで URL を開くだけ」
+（インストール不要）。起動時に LAN 向け IP の表示・Windows ファイアウォールの
+ポート許可・他 PC 配布用のショートカット(.url)生成を自動で行う。
 """
 
 import asyncio
@@ -24,7 +28,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from database import get_conn, init_db
+from database import base_dir, get_conn, init_db
 
 
 def resource_dir() -> str:
@@ -1072,14 +1076,145 @@ def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
+def _lan_ips() -> list[str]:
+    """この PC の社内 LAN 向け IPv4 アドレスを返す（127.x は除く）。"""
+    ips: list[str] = []
+    # 既定の経路に使われる IP（最も確実）。実際に通信はしない。
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                ips.append(ip)
+        finally:
+            s.close()
+    except Exception:
+        pass
+    # 取りこぼし対策にホスト名から引いたアドレスも足す
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip and not ip.startswith("127.") and ip not in ips:
+                ips.append(ip)
+    except Exception:
+        pass
+    return ips
+
+
+def _ensure_firewall_rule(port: int) -> None:
+    """Windows のファイアウォールで、このポートへの着信を許可する。
+
+    1) すでに許可済みなら何もしない（毎回ルールを作らない）。
+    2) 未設定なら追加を試みる。管理者権限が無くて失敗した場合は、
+       初回だけ UAC（管理者確認）を出して許可を追加する。
+       以降は 1) で検出されるので確認は出ない。
+    3) それでも失敗したら手順を案内するだけで起動は続行する。
+    """
+    if os.name != "nt":
+        return
+    import subprocess
+
+    rule_name = f"Soukozaiko (port {port})"
+    flags = 0x08000000  # CREATE_NO_WINDOW（黒い窓を出さない）
+
+    # 1) 既存チェック
+    try:
+        check = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "show", "rule",
+             f"name={rule_name}"],
+            capture_output=True, text=True, creationflags=flags,
+        )
+        if check.returncode == 0 and rule_name.lower() in check.stdout.lower():
+            return  # すでに許可済み
+    except Exception:
+        pass
+
+    # 2a) まず通常権限で追加（exe が既に管理者で動いている場合はこれで成功）
+    try:
+        r = subprocess.run(
+            ["netsh", "advfirewall", "firewall", "add", "rule",
+             f"name={rule_name}", "dir=in", "action=allow",
+             "protocol=TCP", f"localport={port}"],
+            capture_output=True, text=True, creationflags=flags,
+        )
+        if r.returncode == 0:
+            print(f"  ファイアウォールにポート {port} の許可を追加しました。")
+            return
+    except Exception:
+        pass
+
+    # 2b) 管理者権限が無い場合、初回だけ UAC を出して追加（PowerShell 経由で昇格）
+    try:
+        args = (
+            f"advfirewall firewall add rule name='{rule_name}' "
+            f"dir=in action=allow protocol=TCP localport={port}"
+        )
+        ps = (
+            "Start-Process netsh -Verb RunAs -WindowStyle Hidden "
+            f"-ArgumentList \"{args}\""
+        )
+        print("  ファイアウォールの許可を追加します（管理者の確認が出たら「はい」を押してください）…")
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, creationflags=flags,
+        )
+        if r.returncode == 0:
+            print(f"  ファイアウォールにポート {port} の許可を追加しました。")
+            return
+    except Exception:
+        pass
+
+    print(
+        "  [注意] ファイアウォールの自動設定ができませんでした。\n"
+        "         他の PC から開けない場合は、Windows ファイアウォールで\n"
+        f"         受信ポート TCP {port} を許可してください。"
+    )
+
+
+def _write_client_shortcut(url: str) -> None:
+    """他の PC のデスクトップに置けるブラウザ用ショートカット(.url)を書き出す。"""
+    try:
+        path = os.path.join(base_dir(), "倉庫在庫管理を開く.url")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("[InternetShortcut]\n")
+            f.write(f"URL={url}\n")
+            f.write("IconIndex=0\n")
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    import threading
+    import webbrowser
+
     import uvicorn
 
     host_name = socket.gethostname()
-    print("=" * 56)
+    ips = _lan_ips()
+    server_url = f"http://{ips[0]}:{PORT}/" if ips else f"http://{host_name}:{PORT}/"
+
+    _ensure_firewall_rule(PORT)
+    _write_client_shortcut(server_url)
+
+    print("=" * 60)
     print("  倉庫在庫管理アプリ を起動します")
-    print(f"  このサーバー上:  http://localhost:{PORT}/")
-    print(f"  社内の各 PC から: http://{host_name}:{PORT}/")
-    print("  停止するには Ctrl+C を押してください")
-    print("=" * 56)
+    print("-" * 60)
+    print(f"  このサーバー上で開く:  http://localhost:{PORT}/")
+    print("  社内の他の PC から開く（ブラウザに入力するだけ・インストール不要）:")
+    if ips:
+        for ip in ips:
+            print(f"      http://{ip}:{PORT}/")
+    print(f"      http://{host_name}:{PORT}/   （名前で繋がる場合）")
+    print("-" * 60)
+    print("  ・他の PC では exe を開かず、上の URL をブラウザで開いてください。")
+    print("  ・このフォルダの「倉庫在庫管理を開く.url」を他 PC のデスクトップに")
+    print("    コピーすると、ダブルクリックで在庫画面を開けます。")
+    print("  ・停止するには、この黒い画面を閉じるか Ctrl+C を押してください。")
+    print("=" * 60)
+
+    # サーバー PC では自動でブラウザを開く（少し待ってから）
+    threading.Timer(
+        1.5, lambda: webbrowser.open(f"http://localhost:{PORT}/")
+    ).start()
+
     uvicorn.run(app, host="0.0.0.0", port=PORT)
