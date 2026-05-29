@@ -26,7 +26,7 @@ if errorlevel 1 (
 
 echo.
 echo [2/3] Building the exe...
-pyinstaller --noconfirm --onefile --name soukozaiko --add-data "static;static" main.py
+python -m PyInstaller --noconfirm --onefile --name soukozaiko --add-data "static;static" main.py
 if errorlevel 1 (
     echo.
     echo [ERROR] Build failed.
