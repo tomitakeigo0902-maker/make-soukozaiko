@@ -38,6 +38,7 @@ echo.
 echo [3/3] Copying helper files next to the exe...
 copy /Y "サーバー自動起動を設定.bat" "dist\" > nul 2>&1
 copy /Y "サーバー自動起動を解除.bat" "dist\" > nul 2>&1
+copy /Y "アプリを更新.bat" "dist\" > nul 2>&1
 
 echo.
 echo ============================================================
