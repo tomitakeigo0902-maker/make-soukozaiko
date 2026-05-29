@@ -1101,6 +1101,15 @@ def _lan_ips() -> list[str]:
     return ips
 
 
+def _ascii_only(s: str) -> bool:
+    """文字列が ASCII のみで構成されるか（URL/ショートカットに使えるか）。"""
+    try:
+        s.encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
 def _ensure_firewall_rule(port: int) -> None:
     """Windows のファイアウォールで、このポートへの着信を許可する。
 
@@ -1172,13 +1181,24 @@ def _ensure_firewall_rule(port: int) -> None:
 
 
 def _write_client_shortcut(url: str) -> None:
-    """他の PC のデスクトップに置けるブラウザ用ショートカット(.url)を書き出す。"""
+    """他の PC のデスクトップに置けるブラウザ用ショートカット(.url)を書き出す。
+
+    .url ファイルは Windows の INI 形式で、伝統的にシステム ANSI で読まれる。
+    URL に日本語などが含まれると文字化けする可能性があるので、URL は ASCII の
+    みを許容する。日本語ホスト名の PC で生成された場合は呼び出し側で IP に
+    切り替えてここに渡すこと。改行は CRLF。
+    """
     try:
+        if not _ascii_only(url):
+            return  # ASCII でない URL は壊れた .url を作らないようスキップ
         path = os.path.join(base_dir(), "倉庫在庫管理を開く.url")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("[InternetShortcut]\n")
-            f.write(f"URL={url}\n")
-            f.write("IconIndex=0\n")
+        content = (
+            "[InternetShortcut]\r\n"
+            f"URL={url}\r\n"
+            "IconIndex=0\r\n"
+        )
+        with open(path, "wb") as f:
+            f.write(content.encode("ascii"))
     except Exception:
         pass
 
@@ -1191,9 +1211,14 @@ if __name__ == "__main__":
 
     host_name = socket.gethostname()
     ips = _lan_ips()
-    # 配布用ショートカットは PC 名（ホスト名）で作る。DHCP で IP が変わっても
-    # リンクが切れないため、共有フォルダに置きっぱなしにするのに向く。
-    shortcut_url = f"http://{host_name}:{PORT}/"
+    # ショートカットの URL は ASCII のみが安全。ホスト名が日本語などを含む場合
+    # は URL が文字化けして使えなくなるため、IP アドレスにフォールバックする。
+    if _ascii_only(host_name):
+        shortcut_url = f"http://{host_name}:{PORT}/"
+    elif ips:
+        shortcut_url = f"http://{ips[0]}:{PORT}/"
+    else:
+        shortcut_url = f"http://localhost:{PORT}/"
 
     _ensure_firewall_rule(PORT)
     _write_client_shortcut(shortcut_url)
@@ -1203,10 +1228,16 @@ if __name__ == "__main__":
     print("-" * 60)
     print(f"  このサーバー上で開く:  http://localhost:{PORT}/")
     print("  社内の他の PC から開く（ブラウザに入力するだけ・インストール不要）:")
-    print(f"      http://{host_name}:{PORT}/   ← おすすめ（PC名。IPが変わっても有効）")
+    if _ascii_only(host_name):
+        print(f"      http://{host_name}:{PORT}/   ← おすすめ（PC名。IPが変わっても有効）")
     if ips:
-        for ip in ips:
-            print(f"      http://{ip}:{PORT}/   （PC名で繋がらない場合はこちら）")
+        label = "← おすすめ" if not _ascii_only(host_name) else "（PC名で繋がらない場合はこちら）"
+        for i, ip in enumerate(ips):
+            mark = label if i == 0 else ""
+            print(f"      http://{ip}:{PORT}/   {mark}")
+    if not _ascii_only(host_name):
+        print("  ※ この PC の名前に日本語が含まれているため、URL は IP アドレスを")
+        print("     使ってください（PC 名のままでは正しく動きません）。")
     print("-" * 60)
     print("  ・他の PC では exe を開かず、上の URL をブラウザで開いてください。")
     print("  ・このフォルダの「倉庫在庫管理を開く.url」を共有フォルダや各 PC の")
